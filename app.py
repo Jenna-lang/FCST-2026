@@ -2,9 +2,10 @@ import streamlit as st
 import pandas as pd
 from prophet import Prophet
 import matplotlib.pyplot as plt
+import plotly.express as px
 
-st.set_page_config(page_title="Pareto Forecast 2026", layout="wide")
-st.title("📊 Hệ Thống Dự Báo Pareto 2026")
+st.set_page_config(page_title="Phân tích Pareto & Khách hàng 2026", layout="wide")
+st.title("🚀 Hệ Thống Phân Tích Cung Ứng Pareto 2026")
 
 @st.cache_data
 def load_data():
@@ -12,47 +13,80 @@ def load_data():
     df['ds'] = pd.to_datetime(df['Requested deliv. date'])
     return df
 
-df = load_data()
+try:
+    df = load_data()
+    
+    # Lọc danh sách Pareto (85% giá trị)
+    summary = df.groupby('Material name')['M USD'].sum().sort_values(ascending=False).reset_index()
+    summary['Cum_Pct'] = summary['M USD'].cumsum() / summary['M USD'].sum()
+    pareto_list = summary[summary['Cum_Pct'] <= 0.85]['Material name'].unique()
 
-# Lọc danh sách sản phẩm Pareto (85% giá trị)
-summary = df.groupby('Material name')['M USD'].sum().sort_values(ascending=False).reset_index()
-summary['Cum_Pct'] = summary['M USD'].cumsum() / summary['M USD'].sum()
-pareto_list = summary[summary['Cum_Pct'] <= 0.85]['Material name'].unique()
+    st.sidebar.header("🔍 Bộ Lọc Truy Vấn")
+    selected_prod = st.sidebar.selectbox("Chọn mã linh kiện Pareto:", pareto_list)
 
-selected_prod = st.sidebar.selectbox("Chọn mã hàng Pareto:", pareto_list)
+    if selected_prod:
+        # Lấy dữ liệu của toàn bộ mã hàng đó
+        prod_df = df[df['Material name'] == selected_prod].copy()
+        
+        # TẠO CÁC TAB HIỂN THỊ
+        tab1, tab2 = st.tabs(["📊 Tổng quan mã hàng (Tất cả Khách)", "🎯 Chi tiết dự báo từng Khách"])
 
-if selected_prod:
-    data = df[df['Material name'] == selected_prod].copy()
-    data['ds_month'] = data['ds'].dt.to_period('M').dt.to_timestamp()
-    p_df = data.groupby('ds_month')['Order qty.(A)'].sum().reset_index().rename(columns={'ds_month':'ds', 'Order qty.(A)':'y'})
+        with tab1:
+            st.subheader(f"Phân tích tỷ trọng khách hàng cho: {selected_prod}")
+            col_a, col_b = st.columns(2)
+            
+            with col_a:
+                # Biểu đồ tròn: Tỷ trọng doanh số theo khách hàng
+                cust_share = prod_df.groupby('End Cust')['M USD'].sum().reset_index()
+                fig_pie = px.pie(cust_share, values='M USD', names='End Cust', 
+                                 title="Tỷ trọng doanh số (M USD) giữa các khách hàng",
+                                 hole=0.4, color_discrete_sequence=px.colors.sequential.RdBu)
+                st.plotly_chart(fig_pie, use_container_width=True)
+            
+            with col_b:
+                # Biểu đồ cột: Lịch sử đặt hàng phân theo khách hàng
+                prod_df['Month'] = prod_df['ds'].dt.to_period('M').dt.to_timestamp()
+                monthly_cust = prod_df.groupby(['Month', 'End Cust'])['Order qty.(A)'].sum().reset_index()
+                fig_bar = px.bar(monthly_cust, x='Month', y='Order qty.(A)', color='End Cust',
+                                 title="Lịch sử đặt hàng theo tháng phân loại khách hàng")
+                st.plotly_chart(fig_bar, use_container_width=True)
 
-    if len(p_df) >= 2:
-        # AI Forecast
-        m = Prophet(yearly_seasonality=True, daily_seasonality=False, weekly_seasonality=False)
-        m.fit(p_df)
-        future = m.make_future_dataframe(periods=12, freq='MS')
-        forecast = m.predict(future)
-        for col in ['yhat', 'yhat_lower', 'yhat_upper']: forecast[col] = forecast[col].clip(lower=0)
+        with tab2:
+            st.subheader("Dự báo AI cho từng khách hàng cụ thể")
+            customers_of_prod = sorted(prod_df['End Cust'].unique())
+            selected_cust = st.selectbox("Chọn khách hàng cần xem dự báo:", customers_of_prod)
 
-        # 1. Biểu đồ
-        st.subheader(f"📈 Xu hướng dự báo: {selected_prod}")
-        fig = m.plot(forecast)
-        st.pyplot(fig)
+            if selected_cust:
+                # Lọc dữ liệu cho khách hàng cụ thể
+                cust_data = prod_df[prod_df['End Cust'] == selected_cust].copy()
+                cust_data['ds_month'] = cust_data['ds'].dt.to_period('M').dt.to_timestamp()
+                p_df = cust_data.groupby('ds_month')['Order qty.(A)'].sum().reset_index().rename(columns={'ds_month':'ds', 'Order qty.(A)':'y'})
 
-        # 2. Lời khuyên AI
-        st.subheader("💡 Chiến lược tồn kho")
-        f_2026 = forecast[forecast['ds'].dt.year == 2026]
-        trend = ((f_2026['yhat'].iloc[-1] - f_2026['yhat'].iloc[0]) / f_2026['yhat'].iloc[0] * 100) if f_2026['yhat'].iloc[0] > 0 else 0
-        if trend > 10:
-            st.success(f"Dự báo tăng mạnh {trend:.1f}%. Cần đặt thêm hàng dự phòng.")
-        else:
-            st.info("Nhu cầu ổn định. Duy trì Safety Stock.")
+                if len(p_df) >= 2:
+                    m = Prophet(yearly_seasonality=True, daily_seasonality=False, weekly_seasonality=False)
+                    m.fit(p_df)
+                    future = m.make_future_dataframe(periods=12, freq='MS')
+                    forecast = m.predict(future)
+                    for col in ['yhat', 'yhat_lower', 'yhat_upper']: forecast[col] = forecast[col].clip(lower=0)
 
-        # 3. Bảng số liệu 2026 (Fix lỗi không hiển thị)
-        st.subheader("📋 Chi tiết kế hoạch đặt hàng 2026")
-        res_2026 = f_2026[['ds', 'yhat', 'yhat_lower', 'yhat_upper']]
-        res_2026.columns = ['Tháng', 'Trung bình', 'Min (An toàn)', 'Max (Kỳ vọng)']
-        res_2026['Tháng'] = res_2026['Tháng'].dt.strftime('%m/%Y')
-        st.table(res_2026.style.format('{:,.0f}', subset=['Trung bình', 'Min (An toàn)', 'Max (Kỳ vọng)']))
-    else:
-        st.warning("⚠️ Dữ liệu lịch sử của mã hàng này quá ít để AI phân tích.")
+                    # Giao diện kết quả
+                    c1, c2 = st.columns([2, 1])
+                    with c1:
+                        st.pyplot(m.plot(forecast))
+                    with c2:
+                        st.info(f"💡 **Lời khuyên cho {selected_cust}:**")
+                        f_2026 = forecast[forecast['ds'].dt.year == 2026]
+                        st.write("- Theo dõi kỹ xu hướng tháng tới để điều chỉnh tồn kho.")
+                        st.metric("Dự báo tháng tới", f"{f_2026['yhat'].iloc[0]:,.0f} Pcs")
+
+                    # Bảng dữ liệu 2026
+                    st.write(f"**Bảng số liệu dự báo 2026 cho {selected_cust}:**")
+                    res_table = f_2026[['ds', 'yhat', 'yhat_lower', 'yhat_upper']]
+                    res_table.columns = ['Tháng', 'Trung bình', 'Min', 'Max']
+                    res_table['Tháng'] = res_table['Tháng'].dt.strftime('%m/%Y')
+                    st.dataframe(res_table.style.format('{:,.0f}', subset=['Trung bình', 'Min', 'Max']), use_container_width=True)
+                else:
+                    st.warning("⚠️ Không đủ dữ liệu (ít hơn 2 tháng) để AI dự báo cho khách hàng này.")
+
+except Exception as e:
+    st.error(f"Đã xảy ra lỗi: {e}")
