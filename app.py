@@ -4,7 +4,7 @@ from prophet import Prophet
 import matplotlib.pyplot as plt
 import plotly.express as px
 
-st.set_page_config(page_title="Hệ thống Dự báo Pareto 2026", layout="wide")
+st.set_page_config(page_title="Dự báo Pareto 2026", layout="wide")
 st.title("🚀 Hệ Thống Phân Tích Cung Ứng Pareto 2026")
 
 @st.cache_data
@@ -17,18 +17,17 @@ def load_data():
 try:
     df = load_data()
     
-    # --- TỰ ĐỘNG TÌM CỘT TÊN KHÁCH HÀNG (BỎ QUA CỘT MÃ SỐ) ---
-    potential_names = [c for c in df.columns if ('cust' in c.lower() or 'name' in c.lower()) 
-                      and 'code' not in c.lower() and 'id' not in c.lower()]
-    cust_col = potential_names[0] if potential_names else 'End Cust'
+    # --- PHẦN QUAN TRỌNG: CHỌN CỘT TÊN KHÁCH HÀNG ---
+    st.sidebar.header("⚙️ Cấu hình hiển thị")
+    # Danh sách các cột để bạn chọn đúng cột "Tên" (ví dụ: End Cust, Customer Name...)
+    cust_col = st.sidebar.selectbox("Chọn cột chứa TÊN khách hàng:", df.columns)
 
-    # Phân tích Pareto 85%
+    # Lọc Pareto 85%
     summary = df.groupby('Material name')['M USD'].sum().sort_values(ascending=False).reset_index()
     summary['Cum_Pct'] = summary['M USD'].cumsum() / summary['M USD'].sum()
     pareto_list = summary[summary['Cum_Pct'] <= 0.85]['Material name'].unique()
 
-    st.sidebar.header("🔍 Bộ Lọc")
-    selected_prod = st.sidebar.selectbox("Chọn mã linh kiện:", pareto_list)
+    selected_prod = st.sidebar.selectbox("1. Chọn mã linh kiện Pareto:", pareto_list)
 
     if selected_prod:
         prod_df = df[df['Material name'] == selected_prod].copy()
@@ -56,46 +55,37 @@ try:
                 c_data['ds_m'] = c_data['ds'].dt.to_period('M').dt.to_timestamp()
                 p_df = c_data.groupby('ds_m')['Order qty.(A)'].sum().reset_index().rename(columns={'ds_m':'ds', 'Order qty.(A)':'y'})
 
+                # AI chỉ dự báo khi có từ 2 tháng dữ liệu trở lên
                 if len(p_df) >= 2:
-                    # Chạy mô hình dự báo
-                    m = Prophet(yearly_seasonality=True).fit(p_df)
+                    m = Prophet(yearly_seasonality=True, daily_seasonality=False, weekly_seasonality=False)
+                    m.fit(p_df)
                     future = m.make_future_dataframe(periods=12, freq='MS')
                     fcst = m.predict(future)
-                    
-                    # Giới hạn không cho dự báo âm
                     for col in ['yhat', 'yhat_lower', 'yhat_upper']: fcst[col] = fcst[col].clip(lower=0)
                     
                     st.divider()
                     col_l, col_r = st.columns([2, 1])
-                    
                     with col_l:
-                        st.subheader(f"📈 Biểu đồ dự báo cho {selected_cust}")
+                        st.subheader(f"📈 Biểu đồ dự báo: {selected_cust}")
                         st.pyplot(m.plot(fcst))
-                    
                     with col_r:
-                        st.subheader("🤖 AI Supply Chain Advisor")
+                        st.subheader("🤖 AI Advisor")
                         f26 = fcst[fcst['ds'].dt.year == 2026]
                         avg26 = f26['yhat'].mean()
+                        st.metric("Nhu cầu TB tháng 2026", f"{avg26:,.0f} Pcs")
                         
-                        st.metric("Dự báo TB tháng 2026", f"{avg26:,.0f} Pcs")
-                        
-                        # LOGIC LỜI KHUYÊN
                         if avg26 > p_df['y'].mean() * 1.15:
-                            st.error(f"🚩 **Cảnh báo tăng trưởng:** Nhu cầu tăng mạnh (>15%).")
-                            st.write(f"👉 **Hành động:** Liên hệ khách hàng {selected_cust} xác nhận dự án mới.")
+                            st.error("🚩 Cảnh báo: Xu hướng tăng mạnh (>15%).")
                         else:
-                            st.success(f"✅ **Nhu cầu ổn định:**")
-                            st.write("👉 **Hành động:** Duy trì kế hoạch cung ứng hiện tại.")
-                        
-                        st.info(f"💡 **Mức dự phòng (Max):** {f26['yhat_upper'].max():,.0f} Pcs")
+                            st.success("✅ Xu hướng ổn định.")
+                        st.info(f"💡 Dự phòng (Max): {f26['yhat_upper'].max():,.0f} Pcs")
 
-                    st.subheader("📋 Kế hoạch đặt hàng chi tiết năm 2026")
+                    st.subheader("📋 Bảng số liệu chi tiết 2026")
                     res = f26[['ds', 'yhat', 'yhat_lower', 'yhat_upper']]
-                    res.columns = ['Tháng', 'Trung bình', 'Min (An toàn)', 'Max (Kỳ vọng)']
+                    res.columns = ['Tháng', 'Trung bình', 'Min', 'Max']
                     res['Tháng'] = res['Tháng'].dt.strftime('%m/%Y')
-                    st.dataframe(res.style.format('{:,.0f}', subset=['Trung bình', 'Min (An toàn)', 'Max (Kỳ vọng)']), use_container_width=True)
+                    st.dataframe(res.style.format('{:,.0f}', subset=['Trung bình', 'Min', 'Max']), use_container_width=True)
                 else:
                     st.warning(f"⚠️ Dữ liệu của {selected_cust} quá ít để AI đưa ra dự báo.")
-
 except Exception as e:
-    st.error(f"Đã xảy ra lỗi hệ thống: {e}")
+    st.error(f"Lỗi hệ thống: {e}")
