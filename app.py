@@ -12,18 +12,19 @@ def load_data():
     # Loading the Excel file
     df = pd.read_excel('AICheck.xlsx')
     df.columns = [str(col).strip() for col in df.columns]
+    # Standardize date column
     df['ds'] = pd.to_datetime(df['Requested deliv. date'])
     return df
 
 try:
     df = load_data()
     
-    # 2. Sidebar Configuration
+    # 2. Sidebar Settings
     st.sidebar.header("⚙️ Configuration")
     cust_col = st.sidebar.selectbox("Customer Name Column:", df.columns)
     cie_col = st.sidebar.selectbox("CIE Color Code Column:", df.columns)
     
-    # Pareto Filter (Top 85%)
+    # Pareto Calculation (Top 85%)
     summary = df.groupby('Material name')['M USD'].sum().sort_values(ascending=False).reset_index()
     summary['Cum_Pct'] = summary['M USD'].cumsum() / summary['M USD'].sum()
     pareto_list = summary[summary['Cum_Pct'] <= 0.85]['Material name'].unique()
@@ -32,14 +33,13 @@ try:
 
     if selected_prod:
         prod_df = df[df['Material name'] == selected_prod].copy()
+        st.subheader(f"🔍 Analyzing Product: {selected_prod}")
         
-        st.subheader(f"🔍 Product Analysis: {selected_prod}")
-        
-        # 3. Customer & CIE Filters
+        # 3. Filters
         cust_list = sorted([str(x) for x in prod_df[cust_col].unique()])
         selected_cust = st.selectbox("Select Customer:", ["ALL Customers"] + cust_list)
         
-        # Filter data based on customer
+        # Filter logic
         base_df = prod_df if selected_cust == "ALL Customers" else prod_df[prod_df[cust_col] == selected_cust]
         
         cie_options = sorted(base_df[cie_col].unique().astype(str))
@@ -48,7 +48,7 @@ try:
         if selected_cies:
             all_forecasts = []
             
-            # AI Forecasting Loop
+            # Forecast Loop
             for cie in selected_cies:
                 cie_data = base_df[base_df[cie_col].astype(str) == cie].copy()
                 cie_data['month_ds'] = cie_data['ds'].dt.to_period('M').dt.to_timestamp()
@@ -59,6 +59,22 @@ try:
                     future = m.make_future_dataframe(periods=12, freq='MS')
                     forecast = m.predict(future)
                     
-                    # 2026 Results
+                    # Extract 2026
                     f2026 = forecast[forecast['ds'].dt.year == 2026][['ds', 'yhat']].copy()
-                    f2026['
+                    f2026['yhat'] = f2026['yhat'].clip(lower=0)
+                    f2026['CIE Code'] = cie
+                    f2026['Product'] = selected_prod
+                    all_forecasts.append(f2026)
+            
+            if all_forecasts:
+                final_report = pd.concat(all_forecasts)
+                final_report['Month'] = final_report['ds'].dt.strftime('%m/%Y')
+                
+                # 4. Results
+                st.divider()
+                fig = px.line(final_report, x='Month', y='yhat', color='CIE Code', markers=True, 
+                              title="2026 Demand Trend by CIE Color")
+                fig.update_layout(yaxis_title="Quantity (Pcs)")
+                st.plotly_chart(fig, use_container_width=True)
+                
+                st.write("**Forecast Breakdown Table (
