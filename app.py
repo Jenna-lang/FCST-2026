@@ -55,4 +55,48 @@ try:
                     if len(actual) >= 2:
                         # Prophet Model
                         m = Prophet(yearly_seasonality=True).fit(actual)
-                        future = m.make_future_dataframe(periods
+                        future = m.make_future_dataframe(periods=12, freq='MS')
+                        fcst = m.predict(future)
+                        fcst['yhat'] = fcst['yhat'].clip(lower=0)
+                        
+                        # --- Visualization ---
+                        # Actual History (Solid line)
+                        fig.add_trace(go.Scatter(x=actual['ds'], y=actual['y'], mode='lines+markers', name=f"Actual - {cie}"))
+                        # Forecast (Dashed line)
+                        f_only = fcst[fcst['ds'] > actual['ds'].max()]
+                        fig.add_trace(go.Scatter(x=f_only['ds'], y=f_only['yhat'], mode='lines', 
+                                                 line=dict(dash='dash'), name=f"Forecast - {cie}"))
+                        
+                        # --- AI Advisor Insights ---
+                        avg_past = actual['y'].tail(12).mean()
+                        max_fcst = f_only[f_only['ds'].dt.year == 2026]['yhat'].max()
+                        growth = ((max_fcst - avg_past) / avg_past * 100) if avg_past > 0 else 0
+                        status = "Increasing" if growth > 5 else "Decreasing" if growth < -5 else "Stable"
+                        ai_insights.append(f"**CIE {cie}**: Demand is {status} ({growth:.1f}% vs last 12m).")
+                        
+                        f26 = fcst[fcst['ds'].dt.year == 2026][['ds', 'yhat']].copy()
+                        f26['CIE'] = cie
+                        forecast_results.append(f26)
+                
+                # 4. Display AI Advisor
+                st.divider()
+                st.subheader("💡 AI Strategic Advisor Insights")
+                for insight in ai_insights:
+                    st.info(insight)
+                
+                # 5. Display Chart & Data Table
+                fig.update_layout(title=f"Sales History & 2026 Forecast for {selected_prod}", xaxis_title="Timeline", yaxis_title="Quantity (Pcs)")
+                st.plotly_chart(fig, use_container_width=True)
+                
+                if forecast_results:
+                    st.subheader("Detailed Forecast Table (2026)")
+                    final_table = pd.concat(forecast_results)
+                    final_table['Month'] = final_table['ds'].dt.strftime('%m/%Y')
+                    display_df = final_table[['Month', 'CIE', 'yhat']].rename(columns={'yhat': 'Qty (Pcs)'})
+                    # Format numbers with commas
+                    st.dataframe(display_df.style.format("{:,.0f}", subset=['Qty (Pcs)']), use_container_width=True)
+            else:
+                st.info("Please select a CIE code.")
+
+except Exception as e:
+    st.error(f"Critical System Error: {e}")
