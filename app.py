@@ -1,11 +1,10 @@
 import streamlit as st
 import pandas as pd
 from prophet import Prophet
-import matplotlib.pyplot as plt
 import plotly.express as px
 
-st.set_page_config(page_title="Dự báo Pareto & CIE 2026", layout="wide")
-st.title("🚀 Hệ Thống Dự Báo Theo Khách Hàng & CIE 2026")
+st.set_page_config(page_title="Dự báo Sản xuất theo Màu CIE", layout="wide")
+st.title("🎨 Hệ Thống Dự Báo Sản Lượng & Chỉ Số Màu CIE 2026")
 
 @st.cache_data
 def load_data():
@@ -18,88 +17,76 @@ try:
     df = load_data()
     
     # --- CẤU HÌNH SIDEBAR ---
-    st.sidebar.header("⚙️ Cấu hình Dữ liệu")
-    # Chọn cột Tên khách hàng (để tránh hiện mã số 700153)
-    cust_col = st.sidebar.selectbox("Chọn cột Tên Khách Hàng:", df.columns)
-    
-    # Phân tích Pareto 85% doanh số
-    summary = df.groupby('Material name')['M USD'].sum().sort_values(ascending=False).reset_index()
-    summary['Cum_Pct'] = summary['M USD'].cumsum() / summary['M USD'].sum()
-    pareto_list = summary[summary['Cum_Pct'] <= 0.85]['Material name'].unique()
+    st.sidebar.header("⚙️ Thiết lập dữ liệu")
+    # Tự động nhận diện cột Tên khách hàng và cột CIE (màu sắc)
+    cust_col = st.sidebar.selectbox("Chọn cột Tên Khách Hàng:", df.columns, index=0)
+    cie_col = st.sidebar.selectbox("Chọn cột Chỉ số màu CIE:", df.columns)
 
-    selected_prod = st.sidebar.selectbox("1. Chọn mã linh kiện:", pareto_list)
+    # Lọc danh sách sản phẩm Pareto
+    summary = df.groupby('Material name')['M USD'].sum().sort_values(ascending=False).reset_index()
+    pareto_list = summary.head(20)['Material name'].unique()
+
+    selected_prod = st.sidebar.selectbox("1. Chọn Sản phẩm cần dự báo:", pareto_list)
 
     if selected_prod:
         prod_df = df[df['Material name'] == selected_prod].copy()
-        tab1, tab2 = st.tabs(["📊 Phân bổ Khách hàng", "🎯 Dự báo Chi tiết & CIE"])
+        
+        st.subheader(f"📊 Phân tích mã hàng: {selected_prod}")
+        
+        # Lựa chọn Khách hàng
+        cust_list = sorted([str(x) for x in prod_df[cust_col].unique()])
+        selected_cust = st.selectbox("2. Chọn Khách hàng:", ["TẤT CẢ"] + cust_list)
 
-        with tab1:
-            st.subheader(f"Cơ cấu khách hàng của mã: {selected_prod}")
-            c1, c2 = st.columns(2)
-            with c1:
-                fig_p = px.pie(prod_df.groupby(cust_col)['M USD'].sum().reset_index(), 
-                               values='M USD', names=cust_col, hole=0.4, title="Tỷ trọng doanh số")
-                st.plotly_chart(fig_p, use_container_width=True)
-            with c2:
-                prod_df['Month'] = prod_df['ds'].dt.to_period('M').dt.to_timestamp()
-                fig_b = px.bar(prod_df.groupby(['Month', cust_col])['Order qty.(A)'].sum().reset_index(), 
-                               x='Month', y='Order qty.(A)', color=cust_col, title="Lịch sử đặt hàng theo tháng")
-                st.plotly_chart(fig_b, use_container_width=True)
+        if selected_cust == "TẤT CẢ":
+            working_df = prod_df.copy()
+        else:
+            working_df = prod_df[prod_df[cust_col] == selected_cust].copy()
 
-        with tab2:
-            # --- LỰA CHỌN KHÁCH HÀNG CHI TIẾT ---
-            cust_list = sorted([str(x) for x in prod_df[cust_col].unique()])
-            options = ["TẤT CẢ (Bức tranh tổng quan)"] + cust_list
-            selected_cust = st.selectbox("Chọn khách hàng để xem dự báo & chỉ số CIE:", options)
+        # Hiển thị bảng màu CIE hiện có của sản phẩm này
+        cie_options = sorted([str(x) for x in working_df[cie_col].unique()])
+        selected_cie = st.multiselect("3. Lọc theo chỉ số màu CIE (Có thể chọn nhiều):", cie_options, default=cie_options)
+
+        final_df = working_df[working_df[cie_col].astype(str).isin(selected_cie)].copy()
+
+        # --- XỬ LÝ DỰ BÁO AI ---
+        final_df['ds_m'] = final_df['ds'].dt.to_period('M').dt.to_timestamp()
+        p_df = final_df.groupby('ds_m')['Order qty.(A)'].sum().reset_index().rename(columns={'ds_m':'ds', 'Order qty.(A)':'y'})
+
+        if len(p_df) >= 2:
+            m = Prophet(yearly_seasonality=True).fit(p_df)
+            future = m.make_future_dataframe(periods=12, freq='MS')
+            fcst = m.predict(future)
+            f26 = fcst[fcst['ds'].dt.year == 2026].copy()
             
-            if selected_cust == "TẤT CẢ (Bức tranh tổng quan)":
-                working_df = prod_df.copy()
-                display_name = "TỔNG THỂ THỊ TRƯỜNG"
-            else:
-                working_df = prod_df[prod_df[cust_col] == selected_cust].copy()
-                display_name = selected_cust
+            # Chặn âm
+            f26['yhat'] = f26['yhat'].clip(lower=0)
 
-            # Chuẩn bị dữ liệu cho Prophet
-            working_df['ds_m'] = working_df['ds'].dt.to_period('M').dt.to_timestamp()
-            p_df = working_df.groupby('ds_m')['Order qty.(A)'].sum().reset_index().rename(columns={'ds_m':'ds', 'Order qty.(A)':'y'})
-
-            if len(p_df) >= 2:
-                m = Prophet(yearly_seasonality=True).fit(p_df)
-                future = m.make_future_dataframe(periods=12, freq='MS')
-                fcst = m.predict(future)
-                for c in ['yhat', 'yhat_lower', 'yhat_upper']: fcst[c] = fcst[c].clip(lower=0)
+            col_chart, col_data = st.columns([1, 1])
+            
+            with col_chart:
+                st.write(f"**Xu hướng nhu cầu 2026 ({selected_prod})**")
+                st.pyplot(m.plot(fcst))
+            
+            with col_data:
+                st.write("**Bảng dự báo cụ thể theo Sản phẩm & Màu CIE**")
+                # Tạo bảng tổng hợp cuối cùng
+                report = f26[['ds', 'yhat']].copy()
+                report.columns = ['Tháng', 'Số lượng dự báo (Pcs)']
+                report['Tên Sản phẩm'] = selected_prod
+                report['Chỉ số màu CIE'] = ", ".join(selected_cie) if len(selected_cie) < 4 else "Nhiều mã màu"
+                report['Khách hàng'] = selected_cust
                 
-                st.divider()
-                col_left, col_right = st.columns([2, 1])
+                # Sắp xếp lại cột cho đúng ý bạn
+                report = report[['Tháng', 'Tên Sản phẩm', 'Chỉ số màu CIE', 'Khách hàng', 'Số lượng dự báo (Pcs)']]
+                report['Tháng'] = report['Tháng'].dt.strftime('%m/%Y')
                 
-                with col_left:
-                    st.subheader(f"📈 Dự báo FCST 2026: {display_name}")
-                    st.pyplot(m.plot(fcst))
+                st.dataframe(report.style.format('{:,.0f}', subset=['Số lượng dự báo (Pcs)']), use_container_width=True)
                 
-                with col_right:
-                    st.subheader("💡 Chỉ số CIE & Lời khuyên")
-                    f26 = fcst[fcst['ds'].dt.year == 2026]
-                    avg26 = f26['yhat'].mean()
-                    
-                    # Hiển thị Metric
-                    st.metric(f"Dự báo TB {display_name}", f"{avg26:,.0f} Pcs")
-                    
-                    # Giả lập chỉ số CIE dựa trên biến động dự báo (Volatility)
-                    cie_score = 100 - ((f26['yhat_upper'].std() / avg26) * 100 if avg26 > 0 else 0)
-                    st.write(f"**Chỉ số ổn định CIE:** `{cie_score:.1f}%`")
-                    
-                    if cie_score > 80:
-                        st.success("✅ Khách hàng có độ tin cậy CIE cao. Duy trì mức tồn kho tiêu chuẩn.")
-                    else:
-                        st.warning("⚠️ CIE thấp (Biến động lớn). Cần tăng kho an toàn cho khách hàng này.")
-
-                st.subheader(f"📋 Bảng chi tiết kế hoạch cung ứng cho {display_name}")
-                res = f26[['ds', 'yhat', 'yhat_lower', 'yhat_upper']]
-                res.columns = ['Tháng', 'FCST Trung bình', 'CIE Min (Safety)', 'CIE Max (Buffer)']
-                res['Tháng'] = res['Tháng'].dt.strftime('%m/%Y')
-                st.dataframe(res.style.format('{:,.0f}', subset=['FCST Trung bình', 'CIE Min (Safety)', 'CIE Max (Buffer)']), use_container_width=True)
-            else:
-                st.warning(f"⚠️ Dữ liệu của {display_name} chưa đủ để thực hiện dự báo chi tiết.")
+                # Lời khuyên sản xuất
+                total_2026 = report['Số lượng dự báo (Pcs)'].sum()
+                st.info(f"💡 **Tổng nhu cầu 2026:** {total_2026:,.0f} Pcs cho các mã màu CIE đã chọn.")
+        else:
+            st.warning("⚠️ Dữ liệu lịch sử quá ít để lập bảng dự báo theo màu sắc này.")
 
 except Exception as e:
-    st.error(f"Lỗi thực thi: {e}")
+    st.error(f"Lỗi: {e}. Vui lòng kiểm tra lại tên cột trong file Excel.")
