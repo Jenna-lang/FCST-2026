@@ -17,8 +17,8 @@ def load_data():
 try:
     df = load_data()
     
-    # 2. Sidebar Settings
-    st.sidebar.header("Data Configuration")
+    # 2. Sidebar Configuration
+    st.sidebar.header("Data Settings")
     cust_col = st.sidebar.selectbox("Customer Name Column:", df.columns)
     cie_col = st.sidebar.selectbox("CIE Color Column:", df.columns)
     
@@ -27,9 +27,10 @@ try:
     selected_cust = st.selectbox("1. Select Customer:", cust_list)
 
     if selected_cust:
+        # Filter data for this specific customer first
         cust_df = df[df[cust_col].astype(str) == selected_cust].copy()
         
-        # Pareto Logic (80/20) for this specific customer
+        # Pareto Logic (80/20) for this customer
         sales = cust_df.groupby('Material name')['M USD'].sum().sort_values(ascending=False).reset_index()
         sales['Cum_Pct'] = sales['M USD'].cumsum() / sales['M USD'].sum()
         top_prods = sales[sales['Cum_Pct'] <= 0.81]['Material name'].unique()
@@ -51,4 +52,7 @@ try:
                     cie_df['m'] = cie_df['ds'].dt.to_period('M').dt.to_timestamp()
                     actual = cie_df.groupby('m')['Order qty.(A)'].sum().reset_index().rename(columns={'m':'ds', 'Order qty.(A)':'y'})
                     
-                    if len(actual
+                    if len(actual) >= 2:
+                        # Prophet Model
+                        m = Prophet(yearly_seasonality=True).fit(actual)
+                        future = m.make_future_dataframe(periods
