@@ -101,7 +101,7 @@ try:
 except Exception as e:
     st.error(f"Critical System Error: {e}")
     # --- PHẦN CŨ CỦA BẠN (Giữ nguyên) ---
-df = pd.read_excel("forecast_led_lighting.xlsx") 
+
 import streamlit as st
 import pandas as pd
 
@@ -125,6 +125,7 @@ else:
     df = pd.DataFrame(data)
 
 # Sau đó mới chạy các đoạn code tính MAPE và vẽ biểu đồ với 'df' này
+df = pd.read_excel("forecast_led_lighting.xlsx") 
 # Giả sử df của bạn đã có cột 'Actual' và 'Forecast'
 
 # --- PHẦN MỚI CHÈN THÊM (Chỉ thêm, không thay thế) ---
