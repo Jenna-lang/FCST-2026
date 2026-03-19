@@ -127,7 +127,35 @@ else:
 # Sau đó mới chạy các đoạn code tính MAPE và vẽ biểu đồ với 'df' này
 # 1. Tạo widget tải file ở sidebar (như hình bạn đang có)
 uploaded_file = st.sidebar.file_uploader("Tải lên file Excel dự báo", type=["xlsx"])
+# CHỈNH SỬA DÒNG 129:
+# Giả sử ô tải file ở sidebar bạn đã đặt tên biến là 'uploaded_file' ở phía trên
+# Nếu chưa có biến đó, hãy kiểm tra phần đầu file app.py của bạn.
 
+if uploaded_file is not None:
+    # Đọc dữ liệu trực tiếp từ file khách hàng vừa tải lên
+    df = pd.read_excel(uploaded_file)
+    
+    # Tạo Tab để hiển thị như bạn muốn
+    tab1, tab2 = st.tabs(["📊 Tổng quan", "🎯 Chi tiết Khách hàng & Mã hàng"])
+    
+    with tab1:
+        st.subheader("Dữ liệu tổng hợp")
+        st.dataframe(df)
+        
+    with tab2:
+        st.subheader("Lọc theo Khách hàng và Mã hàng")
+        # Sử dụng đúng tên cột "Customer name" từ file của bạn
+        if 'Customer name' in df.columns:
+            customers = df['Customer name'].unique()
+            selected_cust = st.multiselect("Chọn khách hàng", customers)
+            
+            if selected_cust:
+                filtered_df = df[df['Customer name'].isin(selected_cust)]
+                st.dataframe(filtered_df)
+        else:
+            st.error("Không tìm thấy cột 'Customer name' trong file.")
+else:
+    st.info("Vui lòng sử dụng ô tải file ở bên trái để bắt đầu.")
 # 2. KIỂM TRA: Nếu có file được tải lên thì mới đọc, nếu không thì dùng file mặc định hoặc báo lỗi
 if uploaded_file is not None:
     # SỬA DÒNG 128 THÀNH DÒNG NÀY:
