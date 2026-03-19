@@ -126,7 +126,46 @@ else:
 
 # Sau đó mới chạy các đoạn code tính MAPE và vẽ biểu đồ với 'df' này
 # 1. Tạo widget tải file ở sidebar (như hình bạn đang có)
-uploaded_file = st.sidebar.file_uploader("Tải lên file Excel dự báo", type=["xlsx"])
+# Kiểm tra xem biến uploaded_file (đã khai báo ở đầu file) có dữ liệu chưa
+if uploaded_file is not None:
+    # Đọc dữ liệu từ file bạn vừa kéo thả vào
+    df = pd.read_excel(uploaded_file)
+    
+    # Tạo 2 Tab riêng biệt
+    tab_tong_quan, tab_chi_tiet = st.tabs(["📊 Tổng quan dự báo", "🎯 Chi tiết khách hàng & Mã hàng"])
+    
+    with tab_tong_quan:
+        st.subheader("Dữ liệu tổng hợp toàn bộ đơn hàng")
+        # Hiển thị bảng dữ liệu gốc
+        st.dataframe(df, use_container_width=True)
+        
+    with tab_chi_tiet:
+        st.subheader("Bộ lọc chi tiết dự báo Lighting LED")
+        
+        # Tạo bộ lọc thông minh
+        col1, col2 = st.columns(2)
+        with col1:
+            # Lấy danh sách khách hàng từ cột 'Customer name'
+            customers = df['Customer name'].unique()
+            selected_cust = st.multiselect("Chọn khách hàng", customers)
+        
+        with col2:
+            # Lọc mã hàng dựa trên khách hàng đã chọn
+            if selected_cust:
+                available_parts = df[df['Customer name'].isin(selected_cust)]['Part Number'].unique()
+                selected_parts = st.multiselect("Chọn mã hàng (Part Number)", available_parts)
+            else:
+                selected_parts = []
+
+        # Hiển thị kết quả sau khi lọc
+        if selected_cust and selected_parts:
+            final_df = df[(df['Customer name'].isin(selected_cust)) & (df['Part Number'].isin(selected_parts))]
+            st.write(f"Kết quả cho {len(selected_parts)} mã hàng đã chọn:")
+            st.dataframe(final_df, use_container_width=True)
+        else:
+            st.info("Vui lòng chọn Khách hàng và Mã hàng để xem chi tiết dự báo.")
+else:
+    st.warning("Vui lòng tải file Excel vào ô 'Drag and drop file here' ở bên trái.")
 # CHỈNH SỬA DÒNG 129:
 # Giả sử ô tải file ở sidebar bạn đã đặt tên biến là 'uploaded_file' ở phía trên
 # Nếu chưa có biến đó, hãy kiểm tra phần đầu file app.py của bạn.
