@@ -125,6 +125,18 @@ else:
     df = pd.DataFrame(data)
 
 # Sau đó mới chạy các đoạn code tính MAPE và vẽ biểu đồ với 'df' này
+# 1. Tạo widget tải file ở sidebar (như hình bạn đang có)
+uploaded_file = st.sidebar.file_uploader("Tải lên file Excel dự báo", type=["xlsx"])
+
+# 2. KIỂM TRA: Nếu có file được tải lên thì mới đọc, nếu không thì dùng file mặc định hoặc báo lỗi
+if uploaded_file is not None:
+    # SỬA DÒNG 128 THÀNH DÒNG NÀY:
+    df = pd.read_excel(uploaded_file)
+    st.success("Đã đọc dữ liệu từ file bạn vừa tải lên!")
+else:
+    # Nếu không có file tải lên, app sẽ không cố đọc file forecast_led_lighting.xlsx nữa
+    st.warning("Vui lòng tải file Excel vào ô bên trái để xem kết quả.")
+    st.stop() # Dừng các lệnh bên dưới lại cho đến khi có file
 df = pd.read_excel("forecast_led_lighting.xlsx") 
 # Giả sử df của bạn đã có cột 'Actual' và 'Forecast'
 
