@@ -187,7 +187,11 @@ if uploaded_file is not None:
         if 'Customer name' in df.columns:
             customers = df['Customer name'].unique()
             selected_cust = st.multiselect("Chọn khách hàng", customers)
-            
+            # Sửa dòng 189 bằng cách thêm tham số 'key'
+selected_cust = st.multiselect("Chọn khách hàng", customers, key="select_customer_tab_detail")
+
+# Tương tự cho phần chọn mã hàng (nếu có trùng lặp)
+selected_parts = st.multiselect("Chọn mã hàng (Material name)", available_parts, key="select_material_tab_detail")
             if selected_cust:
                 filtered_df = df[df['Customer name'].isin(selected_cust)]
                 st.dataframe(filtered_df)
