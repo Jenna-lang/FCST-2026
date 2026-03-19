@@ -152,14 +152,14 @@ if uploaded_file is not None:
         with col2:
             # Lọc mã hàng dựa trên khách hàng đã chọn
             if selected_cust:
-                available_parts = df[df['Customer name'].isin(selected_cust)]['Part Number'].unique()
-                selected_parts = st.multiselect("Chọn mã hàng (Part Number)", available_parts)
+                available_parts = df[df['Customer name'].isin(selected_cust)]['Material Nam'].unique()
+                selected_parts = st.multiselect("Chọn mã hàng (Material name)", available_parts)
             else:
                 selected_parts = []
 
         # Hiển thị kết quả sau khi lọc
         if selected_cust and selected_parts:
-            final_df = df[(df['Customer name'].isin(selected_cust)) & (df['Part Number'].isin(selected_parts))]
+            final_df = df[(df['Customer name'].isin(selected_cust)) & (df['Material name'].isin(selected_parts))]
             st.write(f"Kết quả cho {len(selected_parts)} mã hàng đã chọn:")
             st.dataframe(final_df, use_container_width=True)
         else:
