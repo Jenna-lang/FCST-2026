@@ -25,7 +25,8 @@ def calculate_yoy_growth(cust_df, prod_name):
     if not active_months: return 0.0, 0.0
     act_2025_same = p_df[(p_df['ds'].dt.year == 2025) & (p_df['ds'].dt.month.isin(active_months))].groupby(p_df['ds'].dt.month)['Order qty.(A)'].sum()
     yoy_growth = (act_2026.sum() - act_2025_same.sum()) / act_2025_same.sum() if act_2025_same.sum() > 0 else 0.0
-    return yoy_growth, act_2026.mean()
+    run_rate = act_2026.mean() 
+    return yoy_growth, run_rate
 
 df = load_data()
 
@@ -60,8 +61,65 @@ if df is not None:
             future = m.make_future_dataframe(periods=12, freq='MS')
             fcst = m.predict(future)
             
-            # --- CHART ---
+            # --- CHART ACTUAL VS AI TREND ---
             fig = go.Figure()
-            act_2026 = df_plot[df_plot['ds'].dt.year == 2026]
-            fig.add_trace(go.Scatter(x=act_2026['ds'], y=act_2026['y'], name="Actual 2026", mode='lines+markers', line=dict(color='blue', width=4)))
-            fcst
+            act_2026_plot = df_plot[df_plot['ds'].dt.year == 2026]
+            fig.add_trace(go.Scatter(x=act_2026_plot['ds'], y=act_2026_plot['y'], name="Actual 2026", mode='lines+markers', line=dict(color='blue', width=4)))
+            fcst_2026_plot = fcst[fcst['ds'].dt.year == 2026]
+            fig.add_trace(go.Scatter(x=fcst_2026_plot['ds'], y=fcst_2026_plot['yhat'], name="AI Trend Forecast", line=dict(dash='dash', color='orange', width=2)))
+            fig.add_trace(go.Scatter(x=df_plot[df_plot['ds'].dt.year < 2026]['ds'], y=df_plot['y'], name="History", line=dict(color='lightgray')))
+            fig.update_layout(title=f"Audit: {selected_prod} (YoY Growth: {yoy_g*100:.1f}%)", hovermode="x unified")
+            st.plotly_chart(fig, use_container_width=True)
+
+            # --- VARIANCE TABLE (MONTHLY & YTD) ---
+            st.subheader("🔢 Digital Variance Analysis")
+            comp = pd.merge(act_2026_plot, fcst[['ds', 'yhat']], on='ds')
+            if not comp.empty:
+                comp['Var %'] = ((comp['y'] - comp['yhat']) / comp['yhat']) * 100
+                comp['YTD Var %'] = ((comp['y'].cumsum() - comp['yhat'].cumsum()) / comp['yhat'].cumsum()) * 100
+                st.dataframe(comp[['ds','y','yhat','Var %', 'YTD Var %']].style.format({
+                    'ds': lambda x: x.strftime('%m/%Y'), 'y': '{:,.0f}', 'yhat': '{:,.0f}', 'Var %': '{:.1f}%', 'YTD Var %': '{:.1f}%'
+                }).applymap(lambda x: 'color: red; font-weight: bold' if abs(x) > 20 else 'color: green', subset=['Var %', 'YTD Var %']), use_container_width=True)
+
+                # --- AI ANALYTICAL COMMENT ---
+                st.markdown("### 💬 AI Analytical Comment")
+                last_ytd = comp['YTD Var %'].iloc[-1]
+                if abs(last_ytd) <= 10: status, advice = "STABLE", "Demand follows history. No adjustment needed."
+                elif last_ytd > 10: status, advice = "SURGE", "Performance exceeds baseline. Increase buffer."
+                else: status, advice = "DROP", "Performance below baseline. Review with customer."
+                st.info(f"**Status:** {status} | **Advice:** {advice}")
+
+        with tab2:
+            st.subheader("📋 2026 Strategic Plan")
+            months_26 = pd.date_range(start='2026-01-01', end='2026-12-01', freq='MS')
+            cols_26 = [m.strftime('%m/%Y') for m in months_26]
+            pivot_list = []
+            
+            for p in top_prods:
+                y_g_val, r_r_val = calculate_yoy_growth(cust_df, p)
+                final_factor = 1 + y_g_val + (adj_growth / 100)
+                cies = cust_df[cust_df['Material name'] == p][cie_col].unique()
+                
+                for c in cies:
+                    row = {'Product': p, 'CIE': c, 'YoY Growth': f"{y_g_val*100:.1f}%"}
+                    for m_date in months_26:
+                        m_idx, m_str = m_date.month, m_date.strftime('%m/%Y')
+                        # Lấy thực tế 2026
+                        act_val = cust_df[(cust_df['Material name']==p) & (cust_df[cie_col]==c) & (cust_df['ds'].dt.month==m_idx) & (cust_df['ds'].dt.year==2026)]['Order qty.(A)'].sum()
+                        
+                        if act_val > 0:
+                            row[m_str] = act_val
+                        elif m_date > act_2026_plot['ds'].max() if not act_2026_plot.empty else m_date > pd.Timestamp('2026-03-01'):
+                            h25 = cust_df[(cust_df['Material name']==p) & (cust_df[cie_col]==c) & (cust_df['ds'].dt.month==m_idx) & (cust_df['ds'].dt.year==2025)]['Order qty.(A)'].sum()
+                            row[m_str] = round(h25 * final_factor, 0) if h25 > 0 else round(r_r_val * final_factor, 0)
+                        else:
+                            row[m_str] = 0
+                    pivot_list.append(row)
+            
+            if pivot_list:
+                res_df = pd.DataFrame(pivot_list)
+                total_row = {'Product': 'GRAND TOTAL', 'CIE': '---', 'YoY Growth': '---'}
+                for col in cols_26: total_row[col] = res_df[col].sum()
+                res_df = pd.concat([res_df, pd.DataFrame([total_row])], ignore_index=True)
+                st.dataframe(res_df.style.apply(lambda x: ['font-weight:bold; background:#e6f3ff' if x['Product']=='GRAND TOTAL' else '' for _ in x], axis=1).format("{:,.0f}", subset=cols_26), use_container_width=True)
+                st.download_button("📥 Export Plan (CSV)", res_df.to_csv(index=False).encode('utf-8-sig'), "Supply_Plan_2026.csv")
