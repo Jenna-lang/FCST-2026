@@ -2,91 +2,101 @@ import streamlit as st
 import pandas as pd
 from prophet import Prophet
 import plotly.graph_objects as go
-import numpy as np
 
-# 1. Cấu hình trang
+# 1. Page Configuration
 st.set_page_config(page_title="AI Supply Chain Advisor", layout="wide")
-st.title("🤖 AI Strategic Advisor: Actual vs Forecast 2026")
+st.title("🤖 AI Strategic Advisor: History & 2026 Forecast")
 
-# 2. Sidebar - Tải dữ liệu
-st.sidebar.header("Data Settings")
-uploaded_file = st.sidebar.file_uploader("Tải lên file dự báo (Excel)", type=['xlsx'])
+@st.cache_data
+def load_data():
+    df = pd.read_excel('AICheck.xlsx')
+    df.columns = [str(col).strip() for col in df.columns]
+    df['ds'] = pd.to_datetime(df['Requested deliv. date'])
+    return df
 
-if uploaded_file is not None:
-    try:
-        # Load dữ liệu và chuẩn hóa tên cột
-        df = pd.read_excel(uploaded_file)
-        df.columns = [str(col).strip() for col in df.columns]
+try:
+    df = load_data()
+    
+    # 2. Sidebar Configuration
+    st.sidebar.header("Data Settings")
+    cust_col = st.sidebar.selectbox("Customer Name Column:", df.columns)
+    cie_col = st.sidebar.selectbox("CIE Color Column:", df.columns)
+    
+    # Per-Customer Pareto Filter
+    cust_list = sorted(df[cust_col].unique().astype(str))
+    selected_cust = st.selectbox("1. Select Customer:", cust_list)
+
+    if selected_cust:
+        # Filter data for this specific customer first
+        cust_df = df[df[cust_col].astype(str) == selected_cust].copy()
         
-        # Nhận diện cột ngày tháng
-        for col in df.columns:
-            if 'date' in col.lower() or 'month' in col.lower() or 'ds' in col.lower():
-                df['ds'] = pd.to_datetime(df[col], errors='coerce')
-                break
+        # Pareto Logic (80/20) for this customer
+        sales = cust_df.groupby('Material name')['M USD'].sum().sort_values(ascending=False).reset_index()
+        sales['Cum_Pct'] = sales['M USD'].cumsum() / sales['M USD'].sum()
+        top_prods = sales[sales['Cum_Pct'] <= 0.81]['Material name'].unique()
+        
+        selected_prod = st.selectbox(f"2. Select Top Product for {selected_cust}:", top_prods)
 
-        # 3. Phân chia Tab
-        tab_fcst, tab_compare, tab_raw = st.tabs(["🚀 Dự báo AI (Prophet)", "📊 So sánh Actual vs FCST", "📋 Dữ liệu gốc"])
+        if selected_prod:
+            prod_df = cust_df[cust_df['Material name'] == selected_prod].copy()
+            cie_options = sorted(prod_df[cie_col].unique().astype(str))
+            selected_cies = st.multiselect("3. Select CIE Color Codes:", cie_options, default=cie_options[:1])
 
-        with tab_fcst:
-            st.subheader("Dự báo xu hướng 2026 cho Mã hàng chiến lược")
-            # Logic Pareto để chọn mã hàng quan trọng
-            cust_col = 'Customer name' if 'Customer name' in df.columns else df.columns[0]
-            selected_cust = st.selectbox("Chọn Khách hàng:", df[cust_col].unique(), key="fcst_cust")
-            
-            cust_df = df[df[cust_col] == selected_cust]
-            # Giả định dùng cột 'Actual' hoặc 'M USD' để tính Pareto
-            val_col = 'Actual' if 'Actual' in df.columns else df.select_dtypes(include=[np.number]).columns[0]
-            
-            sales = cust_df.groupby('Material name')[val_col].sum().sort_values(ascending=False).reset_index()
-            sales['Cum_Pct'] = sales[val_col].cumsum() / sales[val_col].sum()
-            top_prods = sales[sales['Cum_Pct'] <= 0.85]['Material name'].unique()
-            
-            selected_prod = st.selectbox("Chọn Mã hàng (Nhóm Pareto A):", top_prods, key="fcst_prod")
-            
-            if selected_prod:
-                prod_df = cust_df[cust_df['Material name'] == selected_prod].copy()
-                # Chạy Prophet
-                actual_data = prod_df.groupby('ds')[val_col].sum().reset_index()
-                actual_data.columns = ['ds', 'y']
+            if selected_cies:
+                fig = go.Figure()
+                forecast_results = []
+                ai_insights = []
                 
-                if len(actual_data) >= 2:
-                    m = Prophet(yearly_seasonality=True).fit(actual_data)
-                    future = m.make_future_dataframe(periods=12, freq='MS')
-                    fcst = m.predict(future)
+                for cie in selected_cies:
+                    cie_df = prod_df[prod_df[cie_col].astype(str) == cie].copy()
+                    cie_df['m'] = cie_df['ds'].dt.to_period('M').dt.to_timestamp()
+                    actual = cie_df.groupby('m')['Order qty.(A)'].sum().reset_index().rename(columns={'m':'ds', 'Order qty.(A)':'y'})
                     
-                    fig_prophet = go.Figure()
-                    fig_prophet.add_trace(go.Scatter(x=actual_data['ds'], y=actual_data['y'], name="Lịch sử thực tế"))
-                    fig_prophet.add_trace(go.Scatter(x=fcst['ds'], y=fcst['yhat'], name="Dự báo AI", line=dict(dash='dash')))
-                    st.plotly_chart(fig_prophet, use_container_width=True)
-                    
-                    # AI Advisor
-                    st.info(f"💡 **AI Advisor:** Mã hàng {selected_prod} có xu hướng ổn định dựa trên dữ liệu lịch sử.")
-
-        with tab_compare:
-            st.subheader("Phân tích sai số: Thực tế (Actual) vs Kế hoạch (FCST)")
-            if 'Actual' in df.columns and 'Forecast' in df.columns:
-                # Tính MAPE
-                mask = (df['Actual'] > 0) & (df['Forecast'] > 0)
-                temp_df = df[mask].copy()
-                mape = np.mean(np.abs((temp_df['Actual'] - temp_df['Forecast']) / temp_df['Actual'])) * 100
+                    if len(actual) >= 2:
+                        # Prophet Model
+                        m = Prophet(yearly_seasonality=True).fit(actual)
+                        future = m.make_future_dataframe(periods=12, freq='MS')
+                        fcst = m.predict(future)
+                        fcst['yhat'] = fcst['yhat'].clip(lower=0)
+                        
+                        # --- Visualization ---
+                        # Actual History (Solid line)
+                        fig.add_trace(go.Scatter(x=actual['ds'], y=actual['y'], mode='lines+markers', name=f"Actual - {cie}"))
+                        # Forecast (Dashed line)
+                        f_only = fcst[fcst['ds'] > actual['ds'].max()]
+                        fig.add_trace(go.Scatter(x=f_only['ds'], y=f_only['yhat'], mode='lines', 
+                                                 line=dict(dash='dash'), name=f"Forecast - {cie}"))
+                        
+                        # --- AI Advisor Insights ---
+                        avg_past = actual['y'].tail(12).mean()
+                        max_fcst = f_only[f_only['ds'].dt.year == 2026]['yhat'].max()
+                        growth = ((max_fcst - avg_past) / avg_past * 100) if avg_past > 0 else 0
+                        status = "Increasing" if growth > 5 else "Decreasing" if growth < -5 else "Stable"
+                        ai_insights.append(f"**CIE {cie}**: Demand is {status} ({growth:.1f}% vs last 12m).")
+                        
+                        f26 = fcst[fcst['ds'].dt.year == 2026][['ds', 'yhat']].copy()
+                        f26['CIE'] = cie
+                        forecast_results.append(f26)
                 
-                col1, col2 = st.columns(2)
-                col1.metric("Độ chính xác dự báo", f"{100-mape:.2f}%")
-                col2.metric("Sai số MAPE", f"{mape:.2f}%")
+                # 4. Display AI Advisor
+                st.divider()
+                st.subheader("💡 AI Strategic Advisor Insights")
+                for insight in ai_insights:
+                    st.info(insight)
                 
-                # Biểu đồ cột so sánh
-                fig_comp = go.Figure()
-                fig_comp.add_trace(go.Bar(x=df['ds'], y=df['Actual'], name="Actual (Thực tế)"))
-                fig_comp.add_trace(go.Bar(x=df['ds'], y=df['Forecast'], name="FCST (Kế hoạch)"))
-                fig_comp.update_layout(barmode='group', title="So sánh Actual vs Forecast theo thời gian")
-                st.plotly_chart(fig_comp, use_container_width=True)
+                # 5. Display Chart & Data Table
+                fig.update_layout(title=f"Sales History & 2026 Forecast for {selected_prod}", xaxis_title="Timeline", yaxis_title="Quantity (Pcs)")
+                st.plotly_chart(fig, use_container_width=True)
+                
+                if forecast_results:
+                    st.subheader("Detailed Forecast Table (2026)")
+                    final_table = pd.concat(forecast_results)
+                    final_table['Month'] = final_table['ds'].dt.strftime('%m/%Y')
+                    display_df = final_table[['Month', 'CIE', 'yhat']].rename(columns={'yhat': 'Qty (Pcs)'})
+                    # Format numbers with commas
+                    st.dataframe(display_df.style.format("{:,.0f}", subset=['Qty (Pcs)']), use_container_width=True)
             else:
-                st.warning("File Excel cần có cột 'Actual' và 'Forecast' để hiển thị phần này.")
+                st.info("Please select a CIE code.")
 
-        with tab_raw:
-            st.dataframe(df, use_container_width=True)
-
-    except Exception as e:
-        st.error(f"Lỗi: {e}")
-else:
-    st.info("Vui lòng tải file Excel để khôi phục các phân tích.")
+except Exception as e:
+    st.error(f"Critical System Error: {e}")
