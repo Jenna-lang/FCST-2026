@@ -3,7 +3,7 @@ import pandas as pd
 from prophet import Prophet
 import plotly.graph_objects as go
 
-# 1. System Setup
+# 1. System Configuration
 st.set_page_config(page_title="AI Supply Chain Advisor 2026", layout="wide")
 
 @st.cache_data(ttl=3600)
@@ -38,9 +38,13 @@ if df is not None:
 
     if selected_cust != "-- Select --":
         cust_df = df[df[cust_col] == selected_cust].copy()
+        
+        # Pareto 85% Logic
         rev = cust_df.groupby('Material name')['M USD'].sum().sort_values(ascending=False).reset_index()
         rev['Cum_Pct'] = (rev['M USD'].cumsum() / rev['M USD'].sum()) * 100
         top_prods = rev[rev['Cum_Pct'] <= 85]['Material name'].unique()[:20]
+        if len(top_prods) == 0:
+            top_prods = cust_df.groupby('Material name')['Order qty.(A)'].sum().nlargest(10).index
 
         tab1, tab2 = st.tabs(["📊 Performance & AI Audit", "📋 2026 Strategic Plan"])
 
@@ -56,38 +60,8 @@ if df is not None:
             future = m.make_future_dataframe(periods=12, freq='MS')
             fcst = m.predict(future)
             
-            # CHART
+            # --- CHART ---
             fig = go.Figure()
             act_2026 = df_plot[df_plot['ds'].dt.year == 2026]
             fig.add_trace(go.Scatter(x=act_2026['ds'], y=act_2026['y'], name="Actual 2026", mode='lines+markers', line=dict(color='blue', width=4)))
-            fcst_2026 = fcst[fcst['ds'].dt.year == 2026]
-            fig.add_trace(go.Scatter(x=fcst_2026['ds'], y=fcst_2026['yhat'], name="AI Trend Forecast", line=dict(dash='dash', color='orange', width=2)))
-            fig.add_trace(go.Scatter(x=df_plot[df_plot['ds'].dt.year < 2026]['ds'], y=df_plot['y'], name="History", line=dict(color='lightgray')))
-            fig.update_layout(title=f"Accuracy Audit: {selected_prod}", hovermode="x unified")
-            st.plotly_chart(fig, use_container_width=True)
-
-            # --- VARIANCE TABLE WITH YTD LOGIC ---
-            st.subheader("🔢 Digital Variance Analysis (Monthly vs Lũy kế)")
-            comp = pd.merge(act_2026, fcst[['ds', 'yhat']], on='ds')
-            if not comp.empty:
-                # Monthly Variance
-                comp['Var %'] = ((comp['y'] - comp['yhat']) / comp['yhat']) * 100
-                # YTD Variance (Lũy kế)
-                comp['Actual_Cum'] = comp['y'].cumsum()
-                comp['Forecast_Cum'] = comp['yhat'].cumsum()
-                comp['YTD Var %'] = ((comp['Actual_Cum'] - comp['Forecast_Cum']) / comp['Forecast_Cum']) * 100
-                
-                def style_variance(val):
-                    return 'color: red; font-weight: bold' if abs(val) > 20 else 'color: green'
-
-                st.dataframe(comp[['ds','y','yhat','Var %', 'YTD Var %']].style.format({
-                    'ds': lambda x: x.strftime('%m/%Y'), 'y': '{:,.0f}', 'yhat': '{:,.0f}', 
-                    'Var %': '{:.1f}%', 'YTD Var %': '{:.1f}%'
-                }).applymap(style_variance, subset=['Var %', 'YTD Var %']), use_container_width=True)
-                
-                st.info("💡 **Mẹo quyết định:** Nếu 'Var %' nhảy thất thường nhưng 'YTD Var %' ổn định (<10%), bạn không cần điều chỉnh Forecast. Chỉ can thiệp khi cả hai đều báo đỏ.")
-
-        with tab2:
-            # (Giữ nguyên logic Tab 2 như cũ)
-            st.subheader("📋 2026 Strategic Plan")
-            # ... [Phần code Tab 2]
+            fcst
