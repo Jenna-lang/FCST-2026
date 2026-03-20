@@ -97,59 +97,64 @@ if df is not None:
             else:
                 st.warning("Không đủ dữ liệu để dự báo sản phẩm này.")
 
-        with tab2:
-            with tab2:
+       with tab2:
             st.subheader("📋 Bảng tổng hợp Pareto 2026 (Xử lý thần tốc)")
             
-            # 1. Lấy tỷ lệ tăng trưởng từ Tab 1 để áp dụng cho Tab 2 (Tạo sự đồng bộ)
-            # Giả sử ta lấy mức tăng trưởng trung bình của sản phẩm đang chọn làm chuẩn
+            # 1. Lấy tỷ lệ tăng trưởng từ Tab 1 để áp dụng cho Tab 2
             global_growth_factor = 1.0
+            # Kiểm tra nếu biến 'growth' tồn tại từ Tab 1
             if 'growth' in locals():
                 global_growth_factor = 1 + (growth / 100)
 
-            # 2. Xử lý dữ liệu nhanh bằng Groupby (Không dùng vòng lặp AI)
+            # 2. Xử lý dữ liệu nhanh bằng Groupby
+            # Lọc các sản phẩm thuộc nhóm Pareto
             pareto_df = cust_df[cust_df['Material name'].isin(top_prods)].copy()
             
-            # Tính trung bình sản lượng thực tế gần nhất (năm 2025) cho từng mã màu
+            # Tính trung bình sản lượng thực tế năm 2025 làm cơ sở
             df_2025 = pareto_df[pareto_df['ds'].dt.year == 2025]
-            avg_stats = df_2025.groupby(['Material name', cie_col])['Order qty.(A)'].mean().reset_index()
-            
-            all_rows = []
-            months_2026 = pd.date_range(start='2026-01-01', end='2026-12-01', freq='MS')
+            if not df_2025.empty:
+                avg_stats = df_2025.groupby(['Material name', cie_col])['Order qty.(A)'].mean().reset_index()
+                
+                all_rows = []
+                # Tạo danh sách các tháng trong năm 2026
+                months_2026 = pd.date_range(start='2026-01-01', end='2026-12-01', freq='MS')
 
-            for _, row in avg_stats.iterrows():
-                base_qty = row['Order qty.(A)']
-                for m_date in months_2026:
-                    all_rows.append({
-                        'Month': m_date.strftime('%m/%Y'),
-                        'Product': row['Material name'],
-                        'CIE': row[cie_col],
-                        'Qty (Pcs)': round(base_qty * global_growth_factor, 0)
-                    })
-            
-            if all_rows:
-                final_table = pd.DataFrame(all_rows)
+                for _, row in avg_stats.iterrows():
+                    base_qty = row['Order qty.(A)']
+                    for m_date in months_2026:
+                        all_rows.append({
+                            'Month': m_date.strftime('%m/%Y'),
+                            'Product': row['Material name'],
+                            'CIE': row[cie_col],
+                            'Qty (Pcs)': round(base_qty * global_growth_factor, 0)
+                        })
                 
-                # Bộ lọc nhanh (Quick Filters)
-                c_f1, c_f2 = st.columns(2)
-                with c_f1:
-                    f_p = st.multiselect("Lọc Sản phẩm:", top_prods)
-                with c_f2:
-                    f_m = st.multiselect("Lọc Tháng:", final_table['Month'].unique())
-                
-                # Áp dụng lọc
-                df_view = final_table.copy()
-                if f_p: df_view = df_view[df_view['Product'].isin(f_p)]
-                if f_m: df_view = df_view[df_view['Month'].isin(f_m)]
-                
-                st.dataframe(df_view.style.format("{:,.0f}", subset=['Qty (Pcs)']), use_container_width=True)
-                
-                # Nút tải báo cáo
-                st.download_button(
-                    "📥 Tải báo cáo Pareto 2026 (CSV)",
-                    df_view.to_csv(index=False).encode('utf-8-sig'),
-                    f"Pareto_Fast_FCST_{selected_cust}.csv"
-                )
-            if st.button("🚀 Run Full Pareto Analysis"):
-                # (Phần xử lý Tab 2 giữ nguyên như bản trước)
-                st.info("Đang xử lý dữ liệu tổng hợp...")
+                if all_rows:
+                    final_table = pd.DataFrame(all_rows)
+                    
+                    # Bộ lọc nhanh (Quick Filters)
+                    c_f1, c_f2 = st.columns(2)
+                    with c_f1:
+                        f_p = st.multiselect("Lọc Sản phẩm:", top_prods)
+                    with c_f2:
+                        f_m = st.multiselect("Lọc Tháng:", final_table['Month'].unique())
+                    
+                    # Áp dụng logic lọc
+                    df_view = final_table.copy()
+                    if f_p: 
+                        df_view = df_view[df_view['Product'].isin(f_p)]
+                    if f_m: 
+                        df_view = df_view[df_view['Month'].isin(f_m)]
+                    
+                    # Hiển thị bảng số liệu
+                    st.dataframe(df_view.style.format("{:,.0f}", subset=['Qty (Pcs)']), use_container_width=True)
+                    
+                    # Nút tải báo cáo CSV
+                    st.download_button(
+                        label="📥 Tải báo cáo Pareto 2026 (CSV)",
+                        data=df_view.to_csv(index=False).encode('utf-8-sig'),
+                        file_name=f"Pareto_Fast_FCST_{selected_cust}.csv",
+                        mime='text/csv'
+                    )
+            else:
+                st.warning("Không tìm thấy dữ liệu năm 2025 của khách hàng này để tính toán nhanh.")
