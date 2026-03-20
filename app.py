@@ -3,7 +3,6 @@ import pandas as pd
 from prophet import Prophet
 import plotly.graph_objects as go
 
-# 1. Cấu hình & Tải dữ liệu
 st.set_page_config(page_title="AI Supply Chain Advisor", layout="wide")
 
 @st.cache_data(ttl=3600)
@@ -11,7 +10,6 @@ def load_data():
     try:
         df = pd.read_excel('AICheck.xlsx')
         df.columns = [str(col).strip() for col in df.columns]
-        # Chuyển đổi ngày tháng an toàn
         df['ds'] = pd.to_datetime(df['Requested deliv. date'], errors='coerce')
         df = df.dropna(subset=['ds'])
         return df
@@ -22,7 +20,7 @@ def load_data():
 @st.cache_resource
 def fast_forecast(data_series):
     if len(data_series) < 2: return None
-    # Cấu hình Prophet tối ưu tốc độ
+    # AI vẫn học dựa trên trend toàn bộ lịch sử 2023-2025
     m = Prophet(yearly_seasonality=True, weekly_seasonality=False, daily_seasonality=False)
     m.fit(data_series)
     future = m.make_future_dataframe(periods=12, freq='MS')
@@ -32,7 +30,6 @@ def fast_forecast(data_series):
 df = load_data()
 
 if df is not None:
-    # 2. Sidebar Thiết lập
     st.sidebar.header("⚡ Cấu hình")
     cust_col = st.sidebar.selectbox("Cột khách hàng:", [c for c in df.columns if 'Customer' in c] or df.columns)
     cie_col = st.sidebar.selectbox("Cột CIE:", [c for c in df.columns if 'CIE' in c] or df.columns)
@@ -43,79 +40,80 @@ if df is not None:
     if selected_cust != "-- Chọn --":
         cust_df = df[df[cust_col].astype(str) == selected_cust].copy()
         
-        # Pareto 80/20 tính theo M USD
+        # Pareto 80/20
         sales = cust_df.groupby('Material name')['M USD'].sum().sort_values(ascending=False).reset_index()
         sales['Cum_Pct'] = sales['M USD'].cumsum() / (sales['M USD'].sum() or 1)
         top_prods = sales[sales['Cum_Pct'] <= 0.81]['Material name'].unique()
         
-        selected_prod = st.selectbox("2. Chọn sản phẩm phân tích:", top_prods if len(top_prods)>0 else df['Material name'].unique()[:5])
+        selected_prod = st.selectbox("2. Chọn sản phẩm:", top_prods if len(top_prods)>0 else df['Material name'].unique()[:5])
         
-        # Biến trung gian để truyền dữ liệu giữa 2 Tab
-        growth_final = 0.0 
+        growth_final = 0.0
 
-        tab1, tab2 = st.tabs(["📊 Trung bình cùng kỳ (AI)", "📋 Bảng ngang Pareto 2026"])
+        tab1, tab2 = st.tabs(["📊 So sánh Thực tế vs Dự báo", "📋 Kế hoạch 2026 (Sync)"])
 
         with tab1:
             prod_df = cust_df[cust_df['Material name'] == selected_prod].copy()
             prod_df['m'] = prod_df['ds'].dt.to_period('M').dt.to_timestamp()
-            actual_prod = prod_df.groupby('m')['Order qty.(A)'].sum().reset_index().rename(columns={'m':'ds', 'Order qty.(A)':'y'})
+            actual_all = prod_df.groupby('m')['Order qty.(A)'].sum().reset_index().rename(columns={'m':'ds', 'Order qty.(A)':'y'})
             
-            res = fast_forecast(actual_prod)
+            # Lấy dữ liệu thực tế 2026 đã có
+            act_2026 = actual_all[actual_all['ds'].dt.year == 2026]
+            last_act_date = act_2026['ds'].max() if not act_2026.empty else pd.Timestamp('2025-12-31')
+            
+            res = fast_forecast(actual_all)
             if res is not None:
-                # --- LOGIC TRUNG BÌNH CÙNG KỲ ---
-                future_dates = res[res['ds'] > actual_prod['ds'].max()]
-                avg_fcst = future_dates['yhat'].mean()
+                # 1. Tính toán tăng trưởng dựa trên Thực tế + Dự báo
+                total_25 = actual_all[actual_all['ds'].dt.year == 2025]['y'].sum()
+                sum_act_26 = act_2026['y'].sum()
+                fcst_future_26 = res[(res['ds'].dt.year == 2026) & (res['ds'] > last_act_date)]['yhat'].sum()
+                total_26_mixed = sum_act_26 + fcst_future_26
                 
-                # Tìm tháng tương ứng năm 2025
-                rel_months = future_dates['ds'].dt.month.unique()
-                act_25_sp = actual_prod[(actual_prod['ds'].dt.year == 2025) & (actual_prod['ds'].dt.month.isin(rel_months))]
-                avg_act_25 = act_25_sp['y'].mean() if not act_25_sp.empty else actual_prod[actual_prod['ds'].dt.year == 2025]['y'].mean()
+                growth_final = ((total_26_mixed - total_25) / total_25 * 100) if total_25 > 0 else 0
                 
-                growth_final = ((avg_fcst - avg_act_25) / avg_act_25 * 100) if avg_act_25 > 0 else 0
-                color = "green" if growth_final >= 0 else "red"
-                
-                st.info(f"💡 Dự báo giai đoạn tới so với cùng kỳ 2025 tăng trưởng: **{growth_final:.1f}%**")
-                
+                # 2. So sánh sai số dự báo (Accuracy) cho các tháng đã qua
+                st.subheader("📈 Hiệu suất dự báo 2026")
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.metric("Tăng trưởng dự kiến cả năm", f"{growth_final:.1f}%")
+                with c2:
+                    # So sánh tổng thực tế T1-T3 vs Dự báo AI cho T1-T3
+                    fcst_past_26 = res[(res['ds'] >= '2026-01-01') & (res['ds'] <= last_act_date)]['yhat'].sum()
+                    diff = ((sum_act_26 - fcst_past_26) / fcst_past_26 * 100) if fcst_past_26 > 0 else 0
+                    st.metric("Độ lệch Thực tế vs Dự báo (YTD)", f"{diff:.1f}%", delta=f"{sum_act_26 - fcst_past_26:,.0f} pcs")
+
+                # 3. Biểu đồ trực quan
                 fig = go.Figure()
-                fig.add_trace(go.Scatter(x=actual_prod['ds'], y=actual_prod['y'], name="Thực tế (Actual)"))
-                fig.add_trace(go.Scatter(x=future_dates['ds'], y=future_dates['yhat'], line=dict(dash='dash', color=color), name="Dự báo 2026 (FCST)"))
-                fig.update_layout(title=f"Xu hướng nhu cầu: {selected_prod}", xaxis_title="Thời gian", yaxis_title="Số lượng")
+                # Đường thực tế (liên tục)
+                fig.add_trace(go.Scatter(x=actual_all['ds'], y=actual_all['y'], name="Thực tế", line=dict(color='blue')))
+                # Đường dự báo AI (nét đứt cho tương lai)
+                fig.add_trace(go.Scatter(x=res[res['ds'] > last_act_date]['ds'], y=res[res['ds'] > last_act_date]['yhat'], 
+                                         line=dict(dash='dash', color='orange'), name="Dự báo AI tiếp theo"))
                 st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.warning("Không đủ dữ liệu lịch sử để AI thực hiện dự báo.")
 
         with tab2:
-            st.subheader("📋 Kế hoạch sản xuất Pareto 2026")
-            # Lọc dữ liệu Pareto năm 2025 làm nền tảng
-            p_df = cust_df[cust_df['Material name'].isin(top_prods) & (cust_df['ds'].dt.year == 2025)].copy()
+            st.subheader("📋 Bảng phối hợp Sản xuất - Kinh doanh")
+            df_25 = cust_df[(cust_df['Material name'].isin(top_prods)) & (cust_df['ds'].dt.year == 2025)]
+            base_stats = df_25.groupby(['Material name', cie_col])['Order qty.(A)'].mean().reset_index()
             
-            if not p_df.empty:
-                # Tính trung bình tháng thực tế 2025 cho từng mã CIE
-                base_stats = p_df.groupby(['Material name', cie_col])['Order qty.(A)'].mean().reset_index()
-                
-                # Áp dụng hệ số tăng trưởng từ Tab 1 (Nếu Tab 1 lỗi thì mặc định là 1.0)
-                g_factor = 1 + (growth_final / 100) if growth_final != 0 else 1.0
-                
-                # Tạo danh sách các tháng 2026 làm tiêu đề cột
-                months_26 = [m.strftime('%m/%Y') for m in pd.date_range(start='2026-01-01', end='2026-12-01', freq='MS')]
-                
-                pivot_list = []
-                for _, r in base_stats.iterrows():
-                    row = {'Sản phẩm': r['Material name'], 'CIE': r[cie_col]}
-                    for m in months_26:
-                        row[m] = round(r['Order qty.(A)'] * g_factor, 0)
-                    pivot_list.append(row)
-                
-                res_df = pd.DataFrame(pivot_list)
-                
-                # Bộ lọc nhanh sản phẩm
-                f_p = st.multiselect("Lọc nhanh theo sản phẩm:", top_prods)
-                if f_p: 
-                    res_df = res_df[res_df['Sản phẩm'].isin(f_p)]
-                
-                st.write(f"📌 Hệ số dự báo đang áp dụng: **{g_factor:.2f}x**")
-                st.dataframe(res_df.style.format("{:,.0f}", subset=months_26), use_container_width=True)
-                
-                st.download_button("📥 Tải báo cáo Kế hoạch (CSV)", res_df.to_csv(index=False).encode('utf-8-sig'), "Production_Plan_2026.csv")
-            else:
-                st.warning("⚠️ Không tìm thấy dữ liệu thực tế năm 2025 của khách hàng này để lập kế hoạch.")
+            # Thực tế 2026
+            df_26_act = cust_df[(cust_df['Material name'].isin(top_prods)) & (cust_df['ds'].dt.year == 2026)]
+            act_26_map = df_26_act.groupby(['Material name', cie_col, df_26_act['ds'].dt.strftime('%m/%Y')])['Order qty.(A)'].sum().to_dict()
+
+            g_factor = 1 + (growth_final / 100)
+            months_26 = [m.strftime('%m/%Y') for m in pd.date_range(start='2026-01-01', end='2026-12-01', freq='MS')]
+            
+            pivot_list = []
+            for _, r in base_stats.iterrows():
+                row = {'Sản phẩm': r['Material name'], 'CIE': r[cie_col]}
+                for m_str in months_26:
+                    key = (r['Material name'], r[cie_col], m_str)
+                    if key in act_26_map:
+                        row[m_str] = act_26_map[key] # Dùng số thực tế
+                    else:
+                        row[m_str] = round(r['Order qty.(A)'] * g_factor, 0) # Dùng số dự báo
+                pivot_list.append(row)
+            
+            res_df = pd.DataFrame(pivot_list)
+            st.info(f"📌 Bảng kết hợp: Dữ liệu thực tế đến {last_act_date.strftime('%m/%Y')} và dự báo cho các tháng còn lại.")
+            st.dataframe(res_df.style.format("{:,.0f}", subset=months_26), use_container_width=True)
+            st.download_button("📥 Xuất file kế hoạch", res_df.to_csv(index=False).encode('utf-8-sig'), "Supply_Chain_Plan_2026.csv")
