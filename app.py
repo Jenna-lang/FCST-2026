@@ -17,37 +17,36 @@ def process_data(uploaded_file):
             df = df.dropna(subset=['ds'])
             return df
         else:
-            st.error(f"Không tìm thấy cột '{date_col}'!")
+            st.error(f"Thiếu cột '{date_col}' trong file!")
             return None
     except Exception as e:
-        st.error(f"Lỗi đọc file: {e}")
+        st.error(f"Lỗi định dạng: {e}")
         return None
 
-def calculate_metrics_all_years(cust_df, prod_name):
-    # Lọc sản phẩm
+def calculate_advanced_metrics(cust_df, prod_name):
     p_df = cust_df[cust_df['Material name'] == prod_name].copy()
     
-    # Gom nhóm theo tháng cho TOÀN BỘ lịch sử (2023, 2024, 2025, 2026...)
+    # Gom nhóm theo tháng cho toàn bộ lịch sử (2023 - 2026)
     monthly_all = p_df.groupby(p_df['ds'].dt.to_period('M'))['Order qty.(A)'].sum().reset_index()
     monthly_all['ds_ts'] = monthly_all['ds'].dt.to_timestamp()
     
-    # 1. Avg Growth (Tính trên toàn bộ lịch sử từ 2023)
+    # 1. Avg Monthly Growth (Tăng trưởng trung bình từ 2023)
     monthly_all['Pct_Change'] = monthly_all['Order qty.(A)'].pct_change() * 100
     avg_growth = monthly_all['Pct_Change'].mean()
     
-    # 2. Số thực tế 2026
-    act_2026_df = monthly_all[monthly_all['ds_ts'].dt.year == 2026]
-    act_2026_sum = act_2026_df['Order qty.(A)'].sum()
+    # 2. Metrics cho năm 2026
+    df_2026 = monthly_all[monthly_all['ds_ts'].dt.year == 2026]
+    act_2026_sum = df_2026['Order qty.(A)'].sum()
+    run_rate_26 = df_2026['Order qty.(A)'].mean() if not df_2026.empty else 0
     
-    # 3. YoY Growth (So sánh phần đã có của 2026 với cùng kỳ 2025)
-    months_active_26 = act_2026_df['ds_ts'].dt.month.tolist()
+    # 3. YoY Growth (So sánh thực tế 2026 vs cùng kỳ 2025)
+    months_active_26 = df_2026['ds_ts'].dt.month.tolist()
     act_2025_same = monthly_all[(monthly_all['ds_ts'].dt.year == 2025) & 
                                 (monthly_all['ds_ts'].dt.month.isin(months_active_26))]['Order qty.(A)'].sum()
     
     yoy_growth = (act_2026_sum - act_2025_same) / act_2025_same if act_2025_same > 0 else 0.0
-    run_rate = act_2026_df['Order qty.(A)'].mean() if not act_2026_df.empty else 0.0
     
-    return avg_growth, yoy_growth, run_rate
+    return avg_growth, yoy_growth, run_rate_26
 
 # --- SIDEBAR ---
 st.sidebar.header("📁 Data Management")
@@ -64,36 +63,25 @@ if uploaded_file:
         if selected_cust != "-- Select --":
             cust_df = df[df[cust_col] == selected_cust].copy()
             
-            # Pareto 85% Doanh thu
+            # --- LOGIC PARETO 85% ---
             rev = cust_df.groupby('Material name')['M USD'].sum().sort_values(ascending=False).reset_index()
-            top_prods = rev[rev['M USD'].cumsum() / rev['M USD'].sum() <= 0.86]['Material name'].unique()[:20]
+            rev['Cum_Pct'] = (rev['M USD'].cumsum() / rev['M USD'].sum()) * 100
+            top_prods = rev[rev['Cum_Pct'] <= 86]['Material name'].unique()[:20]
 
-            tab1, tab2 = st.tabs(["📊 Performance & AI Audit", "📋 2026 Strategic Plan"])
+            tab1, tab2 = st.tabs(["📊 Performance Audit", "📋 2026 Strategic Plan"])
 
             with tab1:
                 selected_prod = st.selectbox("Product Audit:", top_prods)
-                avg_g, yoy_g, r_rate = calculate_metrics_all_years(cust_df, selected_prod)
+                avg_g, yoy_g, r_rate = calculate_advanced_metrics(cust_df, selected_prod)
                 
-                # Hiển thị Metrics
-                m1, m2, m3 = st.columns(3)
-                m1.metric("Avg Monthly Growth (History)", f"{avg_g:.1f}%")
-                m2.metric("YoY Growth (26 vs 25)", f"{yoy_g*100:.1f}%")
-                m3.metric("Current Run-rate 2026", f"{r_rate:,.0f}")
+                # Metrics Display
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Avg Monthly Growth", f"{avg_g:.1f}%")
+                c2.metric("YoY Growth (26 vs 25)", f"{yoy_g*100:.1f}%")
+                c3.metric("Current Run-rate 2026", f"{r_rate:,.0f}")
 
-                # BIỂU ĐỒ TOÀN BỘ LỊCH SỬ (2023 -> 2026)
+                # --- PLOT FULL HISTORY (2023-2026) ---
                 p_df = cust_df[cust_df['Material name'] == selected_prod].copy()
-                df_monthly = p_df.groupby(p_df['ds'].dt.to_period('M'))['Order qty.(A)'].sum().reset_index()
-                df_monthly['ds'] = df_monthly['ds'].dt.to_timestamp()
-                df_monthly = df_monthly.rename(columns={'Order qty.(A)': 'y'})
-
-                # AI Prophet Training với toàn bộ data
-                m = Prophet(yearly_seasonality=True).fit(df_monthly)
-                future = m.make_future_dataframe(periods=12, freq='MS')
-                fcst = m.predict(future)
-
-                fig = go.Figure()
-                # 1. Lịch sử (2023, 2024, 2025)
-                history = df_monthly[df_monthly['ds'].dt.year < 2026]
-                fig.add_trace(go.Scatter(x=history['ds'], y=history['y'], name="History (2023-2025)", line=dict(color='lightgray')))
-                
-                #
+                df_plot = p_df.groupby(p_df['ds'].dt.to_period('M'))['Order qty.(A)'].sum().reset_index()
+                df_plot['ds'] = df_plot['ds'].dt.to_timestamp()
+                df_plot = df_plot.rename(columns={'Order
