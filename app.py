@@ -3,11 +3,10 @@ import pandas as pd
 from prophet import Prophet
 import plotly.graph_objects as go
 
-# 1. Page Configuration
+# 1. Cấu hình & Cache dữ liệu (Tối ưu RAM)
 st.set_page_config(page_title="AI Supply Chain Advisor", layout="wide")
-st.title("🤖 AI Strategic Advisor: Year-over-Year Comparison")
 
-@st.cache_data
+@st.cache_data(ttl=3600) # Lưu dữ liệu trong 1 giờ
 def load_data():
     try:
         df = pd.read_excel('AICheck.xlsx')
@@ -18,10 +17,27 @@ def load_data():
         st.error(f"Error: {e}")
         return None
 
+# Hàm dự báo siêu nhanh (Tắt các tính năng thừa để giảm tải CPU)
+@st.cache_resource
+def fast_forecast(data_series):
+    if len(data_series) < 2: return None
+    # Tắt tính năng dự báo theo ngày/tuần vì dữ liệu LED thường theo tháng
+    m = Prophet(
+        yearly_seasonality=True, 
+        weekly_seasonality=False, 
+        daily_seasonality=False,
+        changepoint_prior_scale=0.05
+    )
+    m.fit(data_series)
+    future = m.make_future_dataframe(periods=12, freq='MS')
+    forecast = m.predict(future)
+    return forecast[['ds', 'yhat']]
+
 df = load_data()
 
 if df is not None:
-    # 2. Sidebar Settings
+    # 2. Sidebar rút gọn
+    st.sidebar.header("⚡ Fast Config")
     cust_col = st.sidebar.selectbox("Customer Column:", df.columns)
     cie_col = st.sidebar.selectbox("CIE Column:", df.columns)
     
@@ -31,80 +47,68 @@ if df is not None:
     if selected_cust:
         cust_df = df[df[cust_col].astype(str) == selected_cust].copy()
         
-        # Pareto 80/20 Logic
+        # Pareto calculation (Hàm vector của Pandas cực nhanh)
         sales = cust_df.groupby('Material name')['M USD'].sum().sort_values(ascending=False).reset_index()
         sales['Cum_Pct'] = sales['M USD'].cumsum() / sales['M USD'].sum()
         top_prods = sales[sales['Cum_Pct'] <= 0.81]['Material name'].unique()
         
-        selected_prod = st.selectbox("2. Select Product for Analysis:", top_prods)
+        selected_prod = st.selectbox("2. Select Product for Quick Analysis:", top_prods)
         
-        all_results = []
-        chart_data = None
-        comp_data = None
-        ai_insights = ""
+        tab1, tab2 = st.tabs(["📊 Yearly Comparison", "📋 Full Pareto Details (Slow)"])
 
-        with st.spinner('Analyzing Yearly Growth...'):
-            # A. Biểu đồ đường & So sánh tổng sản lượng
+        with tab1:
+            # CHỈ TÍNH TOÁN CHO SẢN PHẨM ĐANG CHỌN
             prod_df = cust_df[cust_df['Material name'] == selected_prod].copy()
             prod_df['m'] = prod_df['ds'].dt.to_period('M').dt.to_timestamp()
             actual_prod = prod_df.groupby('m')['Order qty.(A)'].sum().reset_index().rename(columns={'m':'ds', 'Order qty.(A)':'y'})
             
-            if len(actual_prod) >= 2:
-                m_prod = Prophet(yearly_seasonality=True).fit(actual_prod)
-                fcst_prod = m_prod.predict(m_prod.make_future_dataframe(periods=12, freq='MS'))
-                fcst_prod['yhat'] = fcst_prod['yhat'].clip(lower=0)
-                chart_data = {'actual': actual_prod, 'fcst': fcst_prod}
+            res = fast_forecast(actual_prod)
+            
+            if res is not None:
+                # Tính toán tăng trưởng trung bình năm
+                avg_25 = actual_prod[actual_prod['ds'].dt.year == 2025]['y'].sum()
+                avg_26 = res[res['ds'].dt.year == 2026]['yhat'].sum()
+                growth = ((avg_26 - avg_25) / avg_25 * 100) if avg_25 > 0 else 0
                 
-                # --- LOGIC: SO SÁNH TỔNG SẢN LƯỢNG NĂM ---
-                sum_2025 = actual_prod[actual_prod['ds'].dt.year == 2025]['y'].sum()
-                sum_2026_fcst = fcst_prod[fcst_prod['ds'].dt.year == 2026]['yhat'].sum()
+                color = "green" if growth > 0 else "red"
+                st.markdown(f"### Yearly Growth: :{color}[{growth:.1f}%]")
                 
-                comp_data = {'labels': ['2025 (Actual)', '2026 (Forecast)'], 'values': [sum_2025, sum_2026_fcst]}
-                
-                if sum_2025 > 0:
-                    growth = ((sum_2026_fcst - sum_2025) / sum_2025) * 100
-                    status = "Increasing" if growth > 10 else "Decreasing" if growth < -10 else "Stable"
-                    ai_insights = f"**{selected_prod}**: Total yearly demand is projected to be **{status}** at **{growth:.1f}%** (Avg vs Avg)."
-                else:
-                    ai_insights = f"**{selected_prod}**: New product entry (Insufficient 2025 data)."
-
-            # B. Bảng chi tiết cho toàn bộ Pareto
-            for p in top_prods:
-                p_df = cust_df[cust_df['Material name'] == p].copy()
-                for c in p_df[cie_col].unique():
-                    c_df = p_df[p_df[cie_col].astype(str) == c].copy()
-                    c_df['m'] = c_df['ds'].dt.to_period('M').dt.to_timestamp()
-                    act_c = c_df.groupby('m')['Order qty.(A)'].sum().reset_index().rename(columns={'m':'ds', 'Order qty.(A)':'y'})
-                    if len(act_c) >= 2:
-                        m_c = Prophet().fit(act_c)
-                        f_c = m_c.predict(m_c.make_future_dataframe(periods=12, freq='MS'))
-                        res26 = f_c[f_c['ds'].dt.year == 2026].copy()
-                        res26['Month'] = res26['ds'].dt.strftime('%m/%Y'); res26['Product'] = p; res26['CIE'] = c
-                        all_results.append(res26[['Month', 'Product', 'CIE', 'yhat']])
-
-        # --- Giao diện Tabs ---
-        tab1, tab2 = st.tabs(["📊 Yearly Comparison", "📋 Full Pareto Details"])
-
-        with tab1:
-            if chart_data and comp_data:
-                st.info(ai_insights)
-                col1, col2 = st.columns([2, 1])
-                
-                with col1:
-                    st.write("**Monthly Trend**")
-                    fig_line = go.Figure()
-                    fig_line.add_trace(go.Scatter(x=chart_data['actual']['ds'], y=chart_data['actual']['y'], name="Actual"))
-                    f_only = chart_data['fcst'][chart_data['fcst']['ds'] > chart_data['actual']['ds'].max()]
-                    fig_line.add_trace(go.Scatter(x=f_only['ds'], y=f_only['yhat'], line=dict(dash='dash'), name="2026 FCST"))
-                    st.plotly_chart(fig_line, use_container_width=True)
-                
-                with col2:
-                    st.write("**Yearly Volume**")
-                    fig_bar = go.Figure(data=[go.Bar(x=comp_data['labels'], y=comp_data['values'], marker_color=['#1f77b4', '#ff7f0e'])])
-                    fig_bar.update_layout(height=400)
-                    st.plotly_chart(fig_bar, use_container_width=True)
+                # Vẽ biểu đồ 2 cột (Chart & Bar)
+                c1, c2 = st.columns([2, 1])
+                with c1:
+                    fig_l = go.Figure()
+                    fig_l.add_trace(go.Scatter(x=actual_prod['ds'], y=actual_prod['y'], name="Actual"))
+                    f_only = res[res['ds'] > actual_prod['ds'].max()]
+                    fig_l.add_trace(go.Scatter(x=f_only['ds'], y=f_only['yhat'], line=dict(dash='dash'), name="2026 FCST"))
+                    st.plotly_chart(fig_l, use_container_width=True)
+                with c2:
+                    fig_b = go.Figure(go.Bar(x=['2025', '2026'], y=[avg_25, avg_26], marker_color=[None, color]))
+                    fig_b.update_layout(height=400, title="Total Volume Comparison")
+                    st.plotly_chart(fig_b, use_container_width=True)
 
         with tab2:
-            if all_results:
-                final_table = pd.concat(all_results).rename(columns={'yhat': 'Qty (Pcs)'})
-                st.dataframe(final_table.style.format("{:,.0f}", subset=['Qty (Pcs)']), use_container_width=True)
+            st.warning("⚠️ Calculating all Pareto items might take a minute.")
+            # CHỈ CHẠY KHI NHẤN NÚT - Đây là chìa khóa để App không bị lag
+            if st.button("🚀 Run Full Pareto Analysis"):
+                all_results = []
+                bar = st.progress(0)
+                for i, p in enumerate(top_prods):
+                    p_df = cust_df[cust_df['Material name'] == p].copy()
+                    for c in p_df[cie_col].unique():
+                        c_df = p_df[p_df[cie_col].astype(str) == c].copy()
+                        c_df['m'] = c_df['ds'].dt.to_period('M').dt.to_timestamp()
+                        act_c = c_df.groupby('m')['Order qty.(A)'].sum().reset_index().rename(columns={'m':'ds', 'Order qty.(A)':'y'})
+                        
+                        f_c = fast_forecast(act_c)
+                        if f_c is not None:
+                            r26 = f_c[f_c['ds'].dt.year == 2026].copy()
+                            r26['Month'] = r26['ds'].dt.strftime('%m/%Y')
+                            r26['Product'] = p
+                            r26['CIE'] = c
+                            all_results.append(r26)
+                    bar.progress((i + 1) / len(top_prods))
+                
+                if all_results:
+                    final = pd.concat(all_results).rename(columns={'yhat': 'Qty (Pcs)'})
+                    st.dataframe(final.style.format("{:,.0f}", subset=['Qty (Pcs)']), use_container_width=True)
+                    st.download_button("📥 Download Report", final.to_csv(index=False).encode('utf-8-sig'), "Pareto_2026.csv")
