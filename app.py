@@ -13,7 +13,6 @@ def process_data(uploaded_file):
         date_col, qty_col = 'Requested deliv. date', 'Order qty.(A)'
         
         if date_col in df.columns and qty_col in df.columns:
-            # Force data types to prevent missing rows
             df['ds'] = pd.to_datetime(df[date_col], errors='coerce')
             df[qty_col] = pd.to_numeric(df[qty_col], errors='coerce').fillna(0)
             df = df.dropna(subset=['ds'])
@@ -27,9 +26,9 @@ def process_data(uploaded_file):
 
 def get_metrics(cust_df, prod_name):
     p_df = cust_df[cust_df['Material name'] == prod_name].copy()
-    if p_df.empty: return 0.0, 0.0, 0.0
+    if p_df.empty: return 0.0, 0.0, 0.0, 0.0
     
-    # Monthly aggregation of ALL history found in Excel
+    # Monthly aggregation
     monthly = p_df.groupby(p_df['ds'].dt.to_period('M'))['Order qty.(A)'].sum().reset_index()
     monthly['ds_ts'] = monthly['ds'].dt.to_timestamp()
     
@@ -37,16 +36,20 @@ def get_metrics(cust_df, prod_name):
     monthly['Pct_Change'] = monthly['Order qty.(A)'].pct_change() * 100
     avg_trend = monthly['Pct_Change'].mean() if not monthly['Pct_Change'].empty else 0.0
     
-    # 2026 Run-rate (Average of months that have passed in 2026)
+    # 2026 Metrics
     df_26 = monthly[monthly['ds_ts'].dt.year == 2026]
     rr_26 = df_26['Order qty.(A)'].mean() if not df_26.empty else 0.0
     
+    # --- LOGIC TRUNG BÌNH TRƯỢT (MOVING AVERAGE) ---
+    # Lấy trung bình của 3 tháng gần nhất có dữ liệu trong năm 2026
+    ma_26 = df_26['Order qty.(A)'].tail(3).mean() if not df_26.empty else 0.0
+    
     # YoY (2026 Actual vs 2025 same period)
-    m_26 = df_26['ds_ts'].dt.month.tolist()
-    act_25 = monthly[(monthly['ds_ts'].dt.year == 2025) & (monthly['ds_ts'].dt.month.isin(m_26))]['Order qty.(A)'].sum()
+    m_26_list = df_26['ds_ts'].dt.month.tolist()
+    act_25 = monthly[(monthly['ds_ts'].dt.year == 2025) & (monthly['ds_ts'].dt.month.isin(m_26_list))]['Order qty.(A)'].sum()
     yoy = (df_26['Order qty.(A)'].sum() - act_25) / act_25 if act_25 > 0 else 0.0
     
-    return avg_trend, yoy, rr_26
+    return avg_trend, yoy, rr_26, ma_26
 
 # --- SIDEBAR ---
 st.sidebar.header("📁 Data Management")
@@ -62,7 +65,6 @@ if uploaded_file:
 
         if selected_cust != "-- Select --":
             cust_df = df[df[cust_col] == selected_cust].copy()
-            # Pareto 85% based on M USD
             rev = cust_df.groupby('Material name')['M USD'].sum().sort_values(ascending=False).reset_index()
             top_prods = rev[rev['M USD'].cumsum() / rev['M USD'].sum() <= 0.86]['Material name'].unique()[:20]
 
@@ -70,12 +72,12 @@ if uploaded_file:
 
             with tab1:
                 selected_prod = st.selectbox("Product Audit:", top_prods)
-                trnd, yoy, rr = get_metrics(cust_df, selected_prod)
+                trnd, yoy, rr, ma = get_metrics(cust_df, selected_prod)
                 
                 m1, m2, m3 = st.columns(3)
                 m1.metric("Historical Trend", f"{trnd:.1f}%")
                 m2.metric("YoY Growth", f"{yoy*100:.1f}%")
-                m3.metric("2026 Run-rate", f"{rr:,.0f}")
+                m3.metric("3-Month Moving Avg", f"{ma:,.0f}")
 
                 # AI Forecasting
                 p_plot = cust_df[cust_df['Material name'] == selected_prod].copy()
@@ -92,7 +94,7 @@ if uploaded_file:
                 fig.add_trace(go.Scatter(x=fcst_26['ds'], y=fcst_26['yhat'], name="AI Forecast", line=dict(dash='dash', color='orange')))
                 st.plotly_chart(fig, use_container_width=True)
 
-                # --- THE MISSING VARIANCE TABLE & COMMENTS ---
+                # Variance Table
                 st.subheader("🔢 2026 Variance Analysis (Actual vs AI)")
                 act_26 = m_plot[m_plot['ds'].dt.year == 2026]
                 v_df = pd.merge(act_26, fcst_26[['ds', 'yhat']], on='ds', how='inner')
@@ -111,35 +113,3 @@ if uploaded_file:
                         st.success("Demand is stable and matching AI projections. No immediate action required.")
 
             with tab2:
-                st.subheader("📋 2026 Full Year Strategic Plan")
-                months_26 = pd.date_range(start='2026-01-01', end='2026-12-01', freq='MS')
-                cols_26 = [m.strftime('%m/%Y') for m in months_26]
-                pivot_list = []
-                last_act = m_plot['ds'].max() if not m_plot.empty else pd.Timestamp('2026-01-01')
-
-                for p in top_prods:
-                    p_trnd, p_yoy, p_rr = get_metrics(cust_df, p)
-                    factor = (p_yoy if p_yoy != 0 else (p_trnd/100)) + (adj_growth / 100)
-                    cies = cust_df[cust_df['Material name'] == p][cie_col].unique()
-                    
-                    for c in cies:
-                        row = {'Product': p, 'CIE': c, 'Growth': f"{factor*100:.1f}%"}
-                        for m_date in months_26:
-                            m_idx, m_str = m_date.month, m_date.strftime('%m/%Y')
-                            # Check actuals in Excel
-                            act = cust_df[(cust_df['Material name']==p) & (cust_df[cie_col]==c) & (cust_df['ds'].dt.month==m_idx) & (cust_df['ds'].dt.year==2026)]['Order qty.(A)'].sum()
-                            
-                            if act > 0: row[m_str] = act
-                            elif m_date > last_act:
-                                h25 = cust_df[(cust_df['Material name']==p) & (cust_df[cie_col]==c) & (cust_df['ds'].dt.month==m_idx) & (cust_df['ds'].dt.year==2025)]['Order qty.(A)'].sum()
-                                # Fallback: If 2025 is 0, use 2026 Average (Run-rate)
-                                row[m_str] = round(h25 * (1 + factor), 0) if h25 > 0 else round(p_rr * (1 + factor), 0)
-                            else: row[m_str] = 0
-                        pivot_list.append(row)
-                
-                if pivot_list:
-                    res_df = pd.DataFrame(pivot_list)
-                    total_row = {'Product': 'GRAND TOTAL', 'CIE': '---', 'Growth': '---'}
-                    for col in cols_26: total_row[col] = res_df[col].sum()
-                    res_df = pd.concat([res_df, pd.DataFrame([total_row])], ignore_index=True)
-                    st.dataframe(res_df.style.apply(lambda x: ['background: #e6f3ff; font-weight: bold' if x['Product']=='GRAND TOTAL' else '' for _ in x], axis=1).format("{:,.0f}", subset=cols_26), use_container_width=True)
