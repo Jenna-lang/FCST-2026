@@ -28,16 +28,22 @@ def get_metrics(cust_df, prod_name):
     p_df = cust_df[cust_df['Material name'] == prod_name].copy()
     if p_df.empty: return 0.0, 0.0, 0.0, 0.0
     
+    # Monthly aggregation
     monthly = p_df.groupby(p_df['ds'].dt.to_period('M'))['Order qty.(A)'].sum().reset_index()
     monthly['ds_ts'] = monthly['ds'].dt.to_timestamp()
     
+    # Trend Calculation
     monthly['Pct_Change'] = monthly['Order qty.(A)'].pct_change() * 100
     avg_trend = monthly['Pct_Change'].mean() if not monthly['Pct_Change'].empty else 0.0
     
+    # 2026 Metrics
     df_26 = monthly[monthly['ds_ts'].dt.year == 2026]
     rr_26 = df_26['Order qty.(A)'].mean() if not df_26.empty else 0.0
+    
+    # Moving Average (Last 3 Months of 2026)
     ma_26 = df_26['Order qty.(A)'].tail(3).mean() if not df_26.empty else 0.0
     
+    # YoY (2026 Actual vs 2025 same period)
     m_26_list = df_26['ds_ts'].dt.month.tolist()
     act_25 = monthly[(monthly['ds_ts'].dt.year == 2025) & (monthly['ds_ts'].dt.month.isin(m_26_list))]['Order qty.(A)'].sum()
     yoy = (df_26['Order qty.(A)'].sum() - act_25) / act_25 if act_25 > 0 else 0.0
@@ -65,4 +71,6 @@ if uploaded_file:
 
             with tab1:
                 selected_prod = st.selectbox("Product Audit:", top_prods)
-                trnd, yoy, rr, ma = get_metrics(
+                trnd, yoy, rr, ma = get_metrics(cust_df, selected_prod)
+                
+                m1, m2, m3 = st.columns
