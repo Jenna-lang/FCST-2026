@@ -40,8 +40,7 @@ def get_metrics(cust_df, prod_name):
     df_26 = monthly[monthly['ds_ts'].dt.year == 2026]
     rr_26 = df_26['Order qty.(A)'].mean() if not df_26.empty else 0.0
     
-    # --- LOGIC TRUNG BÌNH TRƯỢT (MOVING AVERAGE) ---
-    # Lấy trung bình của 3 tháng gần nhất có dữ liệu trong năm 2026
+    # Moving Average (Last 3 Months of 2026)
     ma_26 = df_26['Order qty.(A)'].tail(3).mean() if not df_26.empty else 0.0
     
     # YoY (2026 Actual vs 2025 same period)
@@ -89,12 +88,11 @@ if uploaded_file:
                 fcst = model.predict(model.make_future_dataframe(periods=12, freq='MS'))
                 
                 fig = go.Figure()
-                fig.add_trace(go.Scatter(x=m_plot['ds'], y=m_plot['y'], name="Actual (from Excel)", line=dict(color='blue', width=3)))
+                fig.add_trace(go.Scatter(x=m_plot['ds'], y=m_plot['y'], name="Actual (Excel)", line=dict(color='blue', width=3)))
                 fcst_26 = fcst[fcst['ds'].dt.year == 2026]
                 fig.add_trace(go.Scatter(x=fcst_26['ds'], y=fcst_26['yhat'], name="AI Forecast", line=dict(dash='dash', color='orange')))
                 st.plotly_chart(fig, use_container_width=True)
 
-                # Variance Table
                 st.subheader("🔢 2026 Variance Analysis (Actual vs AI)")
                 act_26 = m_plot[m_plot['ds'].dt.year == 2026]
                 v_df = pd.merge(act_26, fcst_26[['ds', 'yhat']], on='ds', how='inner')
@@ -106,10 +104,28 @@ if uploaded_file:
                     last_v = v_df['Var %'].iloc[-1]
                     st.markdown("### 💡 AI Strategic Commentary")
                     if last_v > 15:
-                        st.warning(f"Demand is **{last_v:.1f}% above AI Forecast**. Urgently check component lead times.")
+                        st.warning(f"Demand is **{last_v:.1f}% higher** than forecast. Check supply chain capacity.")
                     elif last_v < -15:
-                        st.error(f"Demand is **{abs(last_v):.1f}% below AI Forecast**. Consider reducing stock orders.")
+                        st.error(f"Demand is **{abs(last_v):.1f}% lower** than forecast. Review stock levels.")
                     else:
-                        st.success("Demand is stable and matching AI projections. No immediate action required.")
+                        st.success("Demand is stable. No immediate action required.")
 
             with tab2:
+                st.subheader("📋 2026 Full Year Strategic Plan")
+                months_26 = pd.date_range(start='2026-01-01', end='2026-12-01', freq='MS')
+                cols_26 = [m.strftime('%m/%Y') for m in months_26]
+                pivot_list = []
+                # Xác định ngày cuối cùng có thực tế trong Excel
+                m_all = cust_df.groupby(cust_df['ds'].dt.to_period('M'))['Order qty.(A)'].sum().reset_index()
+                m_all['ds_ts'] = m_all['ds'].dt.to_timestamp()
+                last_act = m_all[m_all['Order qty.(A)'] > 0]['ds_ts'].max()
+
+                for p in top_prods:
+                    p_trnd, p_yoy, p_rr, p_ma = get_metrics(cust_df, p)
+                    final_f = (p_yoy if p_yoy != 0 else (p_trnd/100)) + (adj_growth / 100)
+                    cies = cust_df[cust_df['Material name'] == p][cie_col].unique()
+                    
+                    for c in cies:
+                        row = {'Product': p, 'CIE': c, 'Growth': f"{final_f*100:.1f}%"}
+                        for m_date in months_26:
+                            m_idx, m_str = m_date.month, m_date.strftime('%m/%Y')
