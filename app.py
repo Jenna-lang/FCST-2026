@@ -28,22 +28,16 @@ def get_metrics(cust_df, prod_name):
     p_df = cust_df[cust_df['Material name'] == prod_name].copy()
     if p_df.empty: return 0.0, 0.0, 0.0, 0.0
     
-    # Monthly aggregation
     monthly = p_df.groupby(p_df['ds'].dt.to_period('M'))['Order qty.(A)'].sum().reset_index()
     monthly['ds_ts'] = monthly['ds'].dt.to_timestamp()
     
-    # Trend Calculation
     monthly['Pct_Change'] = monthly['Order qty.(A)'].pct_change() * 100
     avg_trend = monthly['Pct_Change'].mean() if not monthly['Pct_Change'].empty else 0.0
     
-    # 2026 Metrics
     df_26 = monthly[monthly['ds_ts'].dt.year == 2026]
     rr_26 = df_26['Order qty.(A)'].mean() if not df_26.empty else 0.0
-    
-    # Moving Average (Last 3 Months of 2026)
     ma_26 = df_26['Order qty.(A)'].tail(3).mean() if not df_26.empty else 0.0
     
-    # YoY (2026 Actual vs 2025 same period)
     m_26_list = df_26['ds_ts'].dt.month.tolist()
     act_25 = monthly[(monthly['ds_ts'].dt.year == 2025) & (monthly['ds_ts'].dt.month.isin(m_26_list))]['Order qty.(A)'].sum()
     yoy = (df_26['Order qty.(A)'].sum() - act_25) / act_25 if act_25 > 0 else 0.0
@@ -78,7 +72,6 @@ if uploaded_file:
                 m2.metric("YoY Growth", f"{yoy*100:.1f}%")
                 m3.metric("3-Month Moving Avg", f"{ma:,.0f}")
 
-                # AI Forecasting
                 p_plot = cust_df[cust_df['Material name'] == selected_prod].copy()
                 m_plot = p_plot.groupby(p_plot['ds'].dt.to_period('M'))['Order qty.(A)'].sum().reset_index()
                 m_plot['ds'] = m_plot['ds'].dt.to_timestamp()
@@ -93,32 +86,21 @@ if uploaded_file:
                 fig.add_trace(go.Scatter(x=fcst_26['ds'], y=fcst_26['yhat'], name="AI Forecast", line=dict(dash='dash', color='orange')))
                 st.plotly_chart(fig, use_container_width=True)
 
-                st.subheader("🔢 2026 Variance Analysis (Actual vs AI)")
+                st.subheader("🔢 2026 Variance Analysis")
                 act_26 = m_plot[m_plot['ds'].dt.year == 2026]
                 v_df = pd.merge(act_26, fcst_26[['ds', 'yhat']], on='ds', how='inner')
-                
                 if not v_df.empty:
                     v_df['Var %'] = ((v_df['y'] - v_df['yhat']) / v_df['yhat']) * 100
                     st.dataframe(v_df.style.format({'ds': lambda x: x.strftime('%m/%Y'), 'y': '{:,.0f}', 'yhat': '{:,.0f}', 'Var %': '{:+.1f}%'}), use_container_width=True)
-                    
-                    last_v = v_df['Var %'].iloc[-1]
-                    st.markdown("### 💡 AI Strategic Commentary")
-                    if last_v > 15:
-                        st.warning(f"Demand is **{last_v:.1f}% higher** than forecast. Check supply chain capacity.")
-                    elif last_v < -15:
-                        st.error(f"Demand is **{abs(last_v):.1f}% lower** than forecast. Review stock levels.")
-                    else:
-                        st.success("Demand is stable. No immediate action required.")
 
             with tab2:
                 st.subheader("📋 2026 Full Year Strategic Plan")
                 months_26 = pd.date_range(start='2026-01-01', end='2026-12-01', freq='MS')
                 cols_26 = [m.strftime('%m/%Y') for m in months_26]
                 pivot_list = []
-                # Xác định ngày cuối cùng có thực tế trong Excel
-                m_all = cust_df.groupby(cust_df['ds'].dt.to_period('M'))['Order qty.(A)'].sum().reset_index()
-                m_all['ds_ts'] = m_all['ds'].dt.to_timestamp()
-                last_act = m_all[m_all['Order qty.(A)'] > 0]['ds_ts'].max()
+                
+                # Tìm ngày cuối cùng có dữ liệu thực tế
+                last_act = df[df['Order qty.(A)'] > 0]['ds'].max()
 
                 for p in top_prods:
                     p_trnd, p_yoy, p_rr, p_ma = get_metrics(cust_df, p)
@@ -129,3 +111,20 @@ if uploaded_file:
                         row = {'Product': p, 'CIE': c, 'Growth': f"{final_f*100:.1f}%"}
                         for m_date in months_26:
                             m_idx, m_str = m_date.month, m_date.strftime('%m/%Y')
+                            # Lấy thực tế từ Excel
+                            actual_val = cust_df[(cust_df['Material name']==p) & (cust_df[cie_col]==c) & 
+                                               (cust_df['ds'].dt.month==m_idx) & (cust_df['ds'].dt.year==2026)]['Order qty.(A)'].sum()
+                            
+                            if actual_val > 0:
+                                row[m_str] = actual_val
+                            elif m_date > last_act:
+                                h25 = cust_df[(cust_df['Material name']==p) & (cust_df[cie_col]==c) & 
+                                             (cust_df['ds'].dt.month==m_idx) & (cust_df['ds'].dt.year==2025)]['Order qty.(A)'].sum()
+                                # Dùng Moving Average nếu 2025 trống
+                                base_val = h25 if h25 > 0 else p_ma
+                                row[m_str] = round(base_val * (1 + final_f), 0)
+                            else:
+                                row[m_str] = 0
+                        pivot_list.append(row)
+                
+                if pivot_list:
