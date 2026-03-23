@@ -6,24 +6,25 @@ import plotly.graph_objects as go
 # 1. System Setup
 st.set_page_config(page_title="AI Supply Chain Advisor 2026", layout="wide")
 
-# --- CORE LOGIC ---
+# --- CORE LOGIC FUNCTIONS ---
 
 def get_actual_avg_qty(df, year, quarter, prod, cie_col, cie_val):
-    """Tính trung bình thực tế các tháng có số > 0 trong một Quý."""
+    """Tính trung bình thực tế của các tháng CÓ SỐ LIỆU trong một Quý."""
     temp = df[(df['Material name'] == prod) & 
               (df[cie_col] == cie_val) & 
               (df['ds'].dt.year == year) & 
               (df['ds'].dt.quarter == quarter)].copy()
     
+    # Gom nhóm theo tháng để lấy tổng từng tháng trước khi tính trung bình
     monthly_sum = temp.groupby(temp['ds'].dt.month)['Order qty.(A)'].sum()
     actual_months = monthly_sum[monthly_sum > 0]
     
     if actual_months.empty:
         return 0.0
-    return actual_months.mean()
+    return actual_months.mean() # Chia đúng cho số lượng tháng có số (1, 2 hoặc 3)
 
 def get_quarterly_growth_logic(cust_df, prod, cie_col, cie_val):
-    """So sánh TB quý gần nhất 2026 vs cùng kỳ 2025."""
+    """Tính tăng trưởng dựa trên TB Quý gần nhất 2026 vs cùng kỳ 2025."""
     df_26 = cust_df[cust_df['ds'].dt.year == 2026].copy()
     if df_26.empty: return 0.0
     
@@ -60,15 +61,19 @@ uploaded_file = st.sidebar.file_uploader("Upload AICheck.xlsx", type=['xlsx'])
 if uploaded_file:
     df = process_data(uploaded_file)
     if df is not None:
-        # Nhận diện cột
         all_cols = df.columns.tolist()
-        cust_col = next((c for c in all_cols if 'customer' in c.lower()), all_cols[0])
-        cie_col = all_cols[1] if all_cols[1] != cust_col else all_cols[0]
         
-        st.sidebar.info(f"Detected CIE Column: **{cie_col}**") # Hiển thị để Jenna kiểm tra
+        # 1. Chọn cột Khách hàng
+        cust_suggest = next((c for c in all_cols if 'customer' in c.lower()), all_cols[0])
+        cust_col = st.sidebar.selectbox("Identify 'Customer' Column:", all_cols, index=all_cols.index(cust_suggest))
         
-        adj_growth = st.sidebar.slider("Global Adjustment (%)", -50, 50, 0)
-        selected_cust = st.sidebar.selectbox("Select Customer:", ["-- Select --"] + sorted(df[cust_col].unique().tolist()))
+        # 2. Chọn cột CIE (Quan trọng nhất)
+        cie_suggest = all_cols[1] if len(all_cols) > 1 else all_cols[0]
+        cie_col = st.sidebar.selectbox("Identify 'CIE / Item Code' Column:", all_cols, index=all_cols.index(cie_suggest))
+        
+        adj_growth = st.sidebar.slider("Global Growth Adjustment (%)", -50, 50, 0)
+        
+        selected_cust = st.sidebar.selectbox("Select Target Customer:", ["-- Select --"] + sorted(df[cust_col].unique().tolist()))
 
         if selected_cust != "-- Select --":
             cust_df = df[df[cust_col] == selected_cust].copy()
@@ -80,54 +85,51 @@ if uploaded_file:
             tab1, tab2 = st.tabs(["📊 Performance Audit", "📋 2026 Strategic Plan"])
 
             with tab1:
-                selected_prod = st.selectbox("Select Product to Audit:", top_prods)
+                selected_prod = st.selectbox("Product Audit:", top_prods)
                 
-                # Audit dựa trên CIE đầu tiên của sản phẩm
+                # Hiển thị trung bình quý để audit
                 sample_cies = cust_df[cust_df['Material name'] == selected_prod][cie_col].unique()
-                sample_cie = sample_cies[0]
+                s_cie = sample_cies[0]
                 
-                q_growth = get_quarterly_growth_logic(cust_df, selected_prod, cie_col, sample_cie)
+                q_growth = get_quarterly_growth_logic(cust_df, selected_prod, cie_col, s_cie)
                 f_growth = q_growth + (adj_growth/100)
                 
                 m1, m2, m3 = st.columns(3)
-                m1.metric("Quarterly Basis", f"{q_growth*100:.1f}%")
-                m2.metric("Final Growth", f"{f_growth*100:.1f}%")
+                m1.metric("Quarterly Growth", f"{q_growth*100:.1f}%")
+                m2.metric("Final Adjusted", f"{f_growth*100:.1f}%")
+                m3.metric("CIE Count", len(sample_cies))
+
+                # Chart Prophet
+                p_plot = cust_df[cust_df['Material name'] == selected_prod].groupby(cust_df['ds'].dt.to_period('M'))['Order qty.(A)'].sum().reset_index()
+                p_plot['ds'] = p_plot['ds'].dt.to_timestamp()
+                p_plot = p_plot.rename(columns={'Order qty.(A)': 'y'})
                 
-                # Prophet Forecast & Variance Analysis
-                p_plot = cust_df[cust_df['Material name'] == selected_prod].copy()
-                m_plot = p_plot.groupby(p_plot['ds'].dt.to_period('M'))['Order qty.(A)'].sum().reset_index()
-                m_plot['ds'] = m_plot['ds'].dt.to_timestamp()
-                m_plot = m_plot.rename(columns={'Order qty.(A)': 'y'})
-                
-                if len(m_plot) > 2:
-                    model = Prophet(yearly_seasonality=True).fit(m_plot)
+                if len(p_plot) > 2:
+                    model = Prophet(yearly_seasonality=True).fit(p_plot)
                     fcst = model.predict(model.make_future_dataframe(periods=12, freq='MS'))
                     
                     fig = go.Figure()
-                    fig.add_trace(go.Scatter(x=m_plot['ds'], y=m_plot['y'], name="Actual", line=dict(color='blue')))
+                    fig.add_trace(go.Scatter(x=p_plot['ds'], y=p_plot['y'], name="Actual", line=dict(color='blue')))
                     fcst_26 = fcst[fcst['ds'].dt.year == 2026]
                     fig.add_trace(go.Scatter(x=fcst_26['ds'], y=fcst_26['yhat'], name="AI Forecast", line=dict(dash='dash', color='orange')))
                     st.plotly_chart(fig, use_container_width=True)
                     
-                    # --- VARIANCE & COMMENTARY (KHÔI PHỤC TẠI ĐÂY) ---
+                    # Variance Analysis
                     st.subheader("🔢 Actual vs AI Forecast Variance")
-                    act_26 = m_plot[m_plot['ds'].dt.year == 2026]
+                    act_26 = p_plot[p_plot['ds'].dt.year == 2026]
                     v_df = pd.merge(act_26, fcst_26[['ds', 'yhat']], on='ds', how='inner')
                     if not v_df.empty:
                         v_df['Variance %'] = ((v_df['y'] - v_df['yhat']) / v_df['yhat']) * 100
                         st.dataframe(v_df.style.format({'ds': lambda x: x.strftime('%m/%Y'), 'y': '{:,.0f}', 'yhat': '{:,.0f}', 'Variance %': '{:+.1f}%'}), use_container_width=True)
                         
                         last_v = v_df['Variance %'].iloc[-1]
-                        st.markdown("### 💡 AI Strategic Commentary")
-                        if last_v > 15:
-                            st.warning(f"Demand is {last_v:.1f}% higher than AI forecast. Potential IC shortage risk.")
-                        elif last_v < -15:
-                            st.error(f"Demand is {abs(last_v):.1f}% lower than AI forecast. Review inventory levels.")
-                        else:
-                            st.success("Demand is stable and aligning with AI projections.")
+                        st.markdown(f"### 💡 AI Strategic Commentary for {selected_prod}")
+                        if last_v > 15: st.warning(f"Demand is {last_v:.1f}% higher than AI forecast. Check material deficiency.")
+                        elif last_v < -15: st.error(f"Demand is {abs(last_v):.1f}% lower than AI. Review order backlog.")
+                        else: st.success("Demand is stable and matching AI projections.")
 
             with tab2:
-                st.subheader("📋 2026 Strategic Plan (True Quarterly Average)")
+                st.subheader(f"📋 2026 Plan for {selected_cust}")
                 months_26 = pd.date_range(start='2026-01-01', end='2026-12-01', freq='MS')
                 cols_26 = [m.strftime('%m/%Y') for m in months_26]
                 pivot_list = []
@@ -160,5 +162,6 @@ if uploaded_file:
                     total_row = {'Product': 'GRAND TOTAL', 'CIE': '', 'Growth Basis': ''}
                     for col in cols_26: total_row[col] = res_df[col].sum()
                     res_df = pd.concat([res_df, pd.DataFrame([total_row])], ignore_index=True)
+                    
                     st.dataframe(res_df.style.apply(lambda x: ['background: #e6f3ff; font-weight: bold' if x['Product']=='GRAND TOTAL' else '' for _ in x], axis=1).format("{:,.0f}", subset=cols_26), use_container_width=True)
                     st.download_button("📥 Download Plan (CSV)", data=res_df.to_csv(index=False).encode('utf-8-sig'), file_name="Strategic_Plan_2026.csv")
