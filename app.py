@@ -116,18 +116,27 @@ if uploaded_file:
                         v_df['Variance %'] = ((v_df['y'] - v_df['yhat']) / v_df['yhat']) * 100
                         avg_v = v_df['Variance %'].mean()
                         
+                        # Added string labels: Month Code, Actual Order Quantity, AI FCST Quantity
+                        v_df = v_df.rename(columns={
+                            'ds': 'Month Code',
+                            'y': 'Actual Order Quantity',
+                            'yhat': 'AI FCST Quantity'
+                        })
+                        
                         avg_row = pd.DataFrame({
-                            'ds': ["AVERAGE"], 
-                            'y': [v_df['y'].mean()], 
-                            'yhat': [v_df['yhat'].mean()], 
+                            'Month Code': ["AVERAGE"], 
+                            'Actual Order Quantity': [v_df['Actual Order Quantity'].mean()], 
+                            'AI FCST Quantity': [v_df['AI FCST Quantity'].mean()], 
                             'Variance %': [avg_v]
                         })
                         v_display = pd.concat([v_df, avg_row], ignore_index=True)
                         
                         st.dataframe(v_display.style.format({
-                            'ds': lambda x: x.strftime('%m/%Y') if hasattr(x, 'strftime') else x,
-                            'y': '{:,.0f}', 'yhat': '{:,.0f}', 'Variance %': '{:+.1f}%'
-                        }).apply(lambda x: ['background: #f0f2f6; font-weight: bold'] * len(x) if x['ds'] == "AVERAGE" else [''] * len(x), axis=1), use_container_width=True)
+                            'Month Code': lambda x: x.strftime('%m/%Y') if hasattr(x, 'strftime') else x,
+                            'Actual Order Quantity': '{:,.0f}', 
+                            'AI FCST Quantity': '{:,.0f}', 
+                            'Variance %': '{:+.1f}%'
+                        }).apply(lambda x: ['background: #f0f2f6; font-weight: bold'] * len(x) if x['Month Code'] == "AVERAGE" else [''] * len(x), axis=1), use_container_width=True)
 
             with tab2:
                 st.subheader(f"📋 2026 Strategic Plan for {selected_cust}")
