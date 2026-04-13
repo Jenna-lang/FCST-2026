@@ -6,10 +6,9 @@ import plotly.graph_objects as go
 # 1. System Config
 st.set_page_config(page_title="AI Supply Chain Advisor 2026", layout="wide")
 
-# --- CORE LOGIC FUNCTIONS (STRICTLY UNCHANGED) ---
+# --- CORE LOGIC FUNCTIONS ---
 
 def get_actual_avg_qty(df, year, quarter, prod, cie_col, cie_val):
-    """Bảo toàn logic cũ: Tính trung bình các tháng > 0 trong quý."""
     temp = df[(df['Material name'] == prod) & 
               (df[cie_col] == cie_val) & 
               (df['ds'].dt.year == year) & 
@@ -23,15 +22,12 @@ def get_actual_avg_qty(df, year, quarter, prod, cie_col, cie_val):
     return actual_months.mean()
 
 def get_quarterly_growth_logic(cust_df, prod, cie_col, cie_val):
-    """Bảo toàn logic cũ: Tăng trưởng dựa trên Q gần nhất 2026 vs 2025."""
     df_26 = cust_df[cust_df['ds'].dt.year == 2026].copy()
     if df_26.empty: return 0.0
-    
     valid_26 = df_26[df_26['Order qty.(A)'] > 0]
     if valid_26.empty: return 0.0
     
     latest_q_26 = valid_26['ds'].dt.quarter.max()
-    
     avg_26 = get_actual_avg_qty(cust_df, 2026, latest_q_26, prod, cie_col, cie_val)
     avg_25 = get_actual_avg_qty(cust_df, 2025, latest_q_26, prod, cie_col, cie_val)
     
@@ -61,21 +57,17 @@ if uploaded_file:
     df = process_data(uploaded_file)
     if df is not None:
         all_cols = df.columns.tolist()
+        cust_col = st.sidebar.selectbox("Customer Column:", all_cols, index=all_cols.index(next((c for c in all_cols if 'customer' in c.lower()), all_cols[0])))
+        cie_col = st.sidebar.selectbox("CIE / Color Code Column:", all_cols, index=all_cols.index(all_cols[1] if len(all_cols) > 1 else all_cols[0]))
         
-        cust_suggest = next((c for c in all_cols if 'customer' in c.lower()), all_cols[0])
-        cust_col = st.sidebar.selectbox("Customer Column:", all_cols, index=all_cols.index(cust_suggest))
-        
-        cie_suggest = all_cols[1] if len(all_cols) > 1 else all_cols[0]
-        cie_col = st.sidebar.selectbox("CIE / Color Code Column:", all_cols, index=all_cols.index(cie_suggest))
-        
-        adj_growth = st.sidebar.slider("Growth Adjustment (%)", -50, 50, 0)
+        adj_growth = st.sidebar.slider("Manual Growth Adjustment (%)", -50, 50, 0)
         
         selected_cust = st.sidebar.selectbox("Select Target Customer:", ["-- Select --"] + sorted(df[cust_col].unique().tolist()))
 
         if selected_cust != "-- Select --":
             cust_df = df[df[cust_col] == selected_cust].copy()
             
-            # Pareto 85% Calculation
+            # Pareto 85%
             rev = cust_df.groupby('Material name')['M USD'].sum().sort_values(ascending=False).reset_index()
             rev['Cum%'] = rev['M USD'].cumsum() / rev['M USD'].sum()
             pareto_df = rev[rev['Cum%'] <= 0.86].copy()
@@ -83,24 +75,37 @@ if uploaded_file:
 
             tab1, tab2 = st.tabs(["📊 Performance Audit", "📋 2026 Strategic Plan"])
 
+            # Lưu trữ Auto-Adjustments để dùng cho Tab 2
+            auto_adjustments = {}
+
             with tab1:
-                # 1. Pareto Label (Expander)
                 with st.expander("🎯 85% Revenue Contribution (Pareto List)"):
-                    st.write(f"The following {len(top_prods)} products account for 85% of revenue:")
                     st.dataframe(pareto_df[['Material name', 'M USD', 'Cum%']].style.format({'M USD': '${:,.2f}', 'Cum%': '{:.1%}'}), use_container_width=True)
 
                 selected_prod = st.selectbox("Product Audit:", top_prods)
-                sample_cies = cust_df[cust_df['Material name'] == selected_prod][cie_col].unique()
-                s_cie = sample_cies[0]
                 
-                q_growth = get_quarterly_growth_logic(cust_df, selected_prod, cie_col, s_cie)
-                f_growth = q_growth + (adj_growth/100)
-                
-                m1, m2, m3 = st.columns(3)
-                m1.metric("Quarterly Growth", f"{q_growth*100:.1f}%")
-                m2.metric("Adjusted Growth", f"{f_growth*100:.1f}%")
-                m3.metric("CIE Items", len(sample_cies))
+                # Tính toán Auto-Adjustment cho TẤT CẢ sản phẩm trong Pareto để Tab 2 sử dụng
+                for p in top_prods:
+                    p_data = cust_df[cust_df['Material name'] == p].groupby(cust_df['ds'].dt.to_period('M'))['Order qty.(A)'].sum().reset_index()
+                    p_data['ds'] = p_data['ds'].dt.to_timestamp()
+                    p_data = p_data.rename(columns={'Order qty.(A)': 'y'})
+                    
+                    if len(p_data) > 2:
+                        m_prophet = Prophet(yearly_seasonality=True).fit(p_data)
+                        f_prophet = m_prophet.predict(m_prophet.make_future_dataframe(periods=12, freq='MS'))
+                        
+                        act_26 = p_data[p_data['ds'].dt.year == 2026]
+                        f_26 = f_prophet[f_prophet['ds'].dt.year == 2026]
+                        v_check = pd.merge(act_26, f_26[['ds', 'yhat']], on='ds', how='inner')
+                        
+                        if not v_check.empty:
+                            avg_v = ((v_check['y'] - v_check['yhat']) / v_check['yhat']).mean()
+                            # Logic: Nếu vượt +/- 20%, lấy phần dư ra làm offset
+                            if avg_v > 0.20: auto_adjustments[p] = avg_v - 0.20
+                            elif avg_v < -0.20: auto_adjustments[p] = avg_v + 0.20
+                            else: auto_adjustments[p] = 0.0
 
+                # Hiển thị Chart cho sản phẩm đang chọn
                 p_plot = cust_df[cust_df['Material name'] == selected_prod].groupby(cust_df['ds'].dt.to_period('M'))['Order qty.(A)'].sum().reset_index()
                 p_plot['ds'] = p_plot['ds'].dt.to_timestamp()
                 p_plot = p_plot.rename(columns={'Order qty.(A)': 'y'})
@@ -111,43 +116,36 @@ if uploaded_file:
                     
                     fig = go.Figure()
                     fig.add_trace(go.Scatter(x=p_plot['ds'], y=p_plot['y'], name="Actual", line=dict(color='blue')))
-                    fcst_26 = fcst[fcst['ds'].dt.year == 2026]
-                    fig.add_trace(go.Scatter(x=fcst_26['ds'], y=fcst_26['yhat'], name="AI Forecast", line=dict(dash='dash', color='orange')))
+                    fcst_26 = fcst[fcst['ds'].dt.year == 2026].copy()
+                    
+                    # Áp dụng auto-offset vào graph nếu có
+                    offset = auto_adjustments.get(selected_prod, 0.0)
+                    fcst_26['yhat_adj'] = fcst_26['yhat'] * (1 + offset)
+                    
+                    fig.add_trace(go.Scatter(x=fcst_26['ds'], y=fcst_26['yhat_adj'], name="AI FCST (Auto-Adjusted)", line=dict(dash='dash', color='orange')))
                     st.plotly_chart(fig, use_container_width=True)
                     
-                    # 2. Updated Table Headers & Average Label
+                    if offset != 0:
+                        st.info(f"💡 AI detected a recurring variance. Future months are auto-adjusted by **{offset*100:+.1f}%**.")
+
                     st.subheader("🔢 Actual vs AI Variance")
-                    act_26 = p_plot[p_plot['ds'].dt.year == 2026]
-                    v_df = pd.merge(act_26, fcst_26[['ds', 'yhat']], on='ds', how='inner')
+                    v_df = pd.merge(p_plot[p_plot['ds'].dt.year == 2026], fcst_26[['ds', 'yhat']], on='ds', how='inner')
+                    v_df['Variance %'] = ((v_df['y'] - v_df['yhat']) / v_df['yhat']) * 100
+                    v_df = v_df.rename(columns={'ds': 'Month Code', 'y': 'Actual Order Quantity', 'yhat': 'AI FCST Quantity'})
                     
-                    if not v_df.empty:
-                        v_df['Variance %'] = ((v_df['y'] - v_df['yhat']) / v_df['yhat']) * 100
-                        
-                        # Rename columns as requested
-                        v_df = v_df.rename(columns={
-                            'ds': 'Month Code',
-                            'y': 'Actual Order Quantity',
-                            'yhat': 'AI FCST Quantity'
-                        })
-                        
-                        avg_row = pd.DataFrame({
-                            'Month Code': ["AVERAGE"], 
-                            'Actual Order Quantity': [v_df['Actual Order Quantity'].mean()], 
-                            'AI FCST Quantity': [v_df['AI FCST Quantity'].mean()], 
-                            'Variance %': [v_df['Variance %'].mean()]
-                        })
-                        v_display = pd.concat([v_df, avg_row], ignore_index=True)
-                        
-                        st.dataframe(v_display.style.format({
-                            'Month Code': lambda x: x.strftime('%m/%Y') if hasattr(x, 'strftime') else x,
-                            'Actual Order Quantity': '{:,.0f}', 
-                            'AI FCST Quantity': '{:,.0f}', 
-                            'Variance %': '{:+.1f}%'
-                        }).apply(lambda x: ['background: #f0f2f6; font-weight: bold'] * len(x) if x['Month Code'] == "AVERAGE" else [''] * len(x), axis=1), use_container_width=True)
+                    avg_row = pd.DataFrame({
+                        'Month Code': ["AVERAGE"], 
+                        'Actual Order Quantity': [v_df['Actual Order Quantity'].mean()], 
+                        'AI FCST Quantity': [v_df['AI FCST Quantity'].mean()], 
+                        'Variance %': [v_df['Variance %'].mean()]
+                    })
+                    st.dataframe(pd.concat([v_df, avg_row], ignore_index=True).style.format({
+                        'Month Code': lambda x: x.strftime('%m/%Y') if hasattr(x, 'strftime') else x,
+                        'Actual Order Quantity': '{:,.0f}', 'AI FCST Quantity': '{:,.0f}', 'Variance %': '{:+.1f}%'
+                    }).apply(lambda x: ['background: #f0f2f6; font-weight: bold']*len(x) if x['Month Code'] == "AVERAGE" else ['']*len(x), axis=1), use_container_width=True)
 
             with tab2:
-                # Tab 2 remains with original logic
-                st.subheader(f"📋 2026 Strategic Plan for {selected_cust}")
+                st.subheader(f"📋 2026 Strategic Plan (Including Auto-Adjustments)")
                 months_26 = pd.date_range(start='2026-01-01', end='2026-12-01', freq='MS')
                 cols_26 = [m.strftime('%m/%Y') for m in months_26]
                 pivot_list = []
@@ -155,29 +153,31 @@ if uploaded_file:
 
                 for p in top_prods:
                     product_cies = cust_df[cust_df['Material name'] == p][cie_col].unique()
+                    p_offset = auto_adjustments.get(p, 0.0) # Lấy offset từ Tab 1
+                    
                     for c in product_cies:
                         q_grow = get_quarterly_growth_logic(cust_df, p, cie_col, c)
-                        f_grow = q_grow + (adj_growth/100)
+                        # Tổng hợp growth: Logic gốc + Manual Slider + Auto-Adjustment từ Variance
+                        total_f_growth = q_grow + (adj_growth/100) + p_offset
                         
-                        row = {'Product': p, 'CIE': str(c), 'Growth Rate': f"{f_grow*100:.1f}%"}
+                        row = {'Product': p, 'CIE': str(c), 'Auto-Adj': f"{p_offset*100:+.1f}%"}
                         for m_date in months_26:
                             m_idx, m_str = m_date.month, m_date.strftime('%m/%Y')
-                            q_idx = (m_idx - 1) // 3 + 1
                             act_val = cust_df[(cust_df['Material name']==p) & (cust_df[cie_col]==c) & (cust_df['ds'].dt.month==m_idx) & (cust_df['ds'].dt.year==2026)]['Order qty.(A)'].sum()
                             
                             if act_val > 0:
                                 row[m_str] = act_val
                             elif m_date > last_act_date:
-                                avg_25 = get_actual_avg_qty(cust_df, 2025, q_idx, p, cie_col, c)
-                                row[m_str] = round(avg_25 * (1 + f_grow), 0)
+                                avg_25 = get_actual_avg_qty(cust_df, 2025, (m_idx-1)//3 + 1, p, cie_col, c)
+                                row[m_str] = round(avg_25 * (1 + total_f_growth), 0)
                             else:
                                 row[m_str] = 0
                         pivot_list.append(row)
                 
                 if pivot_list:
                     res_df = pd.DataFrame(pivot_list)
-                    total_row = {'Product': 'GRAND TOTAL', 'CIE': '', 'Growth Rate': ''}
+                    total_row = {'Product': 'GRAND TOTAL', 'CIE': '', 'Auto-Adj': ''}
                     for col in cols_26: total_row[col] = res_df[col].sum()
                     res_df = pd.concat([res_df, pd.DataFrame([total_row])], ignore_index=True)
-                    st.dataframe(res_df.style.apply(lambda x: ['background: #e6f3ff; font-weight: bold'] * len(x) if x['Product']=='GRAND TOTAL' else [''] * len(x), axis=1).format("{:,.0f}", subset=cols_26), use_container_width=True)
-                    st.download_button("📥 Download Plan (CSV)", data=res_df.to_csv(index=False).encode('utf-8-sig'), file_name="Strategic_Plan_2026.csv")
+                    st.dataframe(res_df.style.apply(lambda x: ['background: #e6f3ff; font-weight: bold']*len(x) if x['Product']=='GRAND TOTAL' else ['']*len(x), axis=1).format("{:,.0f}", subset=cols_26), use_container_width=True)
+                    st.download_button("📥 Download Plan (CSV)", data=res_df.to_csv(index=False).encode('utf-8-sig'), file_name="Strategic_Plan_2026_Adjusted.csv")
