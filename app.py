@@ -6,7 +6,7 @@ import plotly.graph_objects as go
 # 1. System Config
 st.set_page_config(page_title="AI Supply Chain Advisor 2026", layout="wide")
 
-# --- CORE LOGIC FUNCTIONS ---
+# --- CORE LOGIC FUNCTIONS (STRICTLY PRESERVED) ---
 
 def get_actual_avg_qty(df, year, quarter, prod, cie_col, cie_val):
     temp = df[(df['Material name'] == prod) & 
@@ -67,7 +67,7 @@ if uploaded_file:
         if selected_cust != "-- Select --":
             cust_df = df[df[cust_col] == selected_cust].copy()
             
-            # Pareto 85%
+            # Pareto 85% logic
             rev = cust_df.groupby('Material name')['M USD'].sum().sort_values(ascending=False).reset_index()
             rev['Cum%'] = rev['M USD'].cumsum() / rev['M USD'].sum()
             pareto_df = rev[rev['Cum%'] <= 0.86].copy()
@@ -75,7 +75,7 @@ if uploaded_file:
 
             tab1, tab2 = st.tabs(["📊 Performance Audit", "📋 2026 Strategic Plan"])
 
-            # Lưu trữ Auto-Adjustments để dùng cho Tab 2
+            # Dictionary to store Auto-Adjustments for Tab 2
             auto_adjustments = {}
 
             with tab1:
@@ -84,7 +84,7 @@ if uploaded_file:
 
                 selected_prod = st.selectbox("Product Audit:", top_prods)
                 
-                # Tính toán Auto-Adjustment cho TẤT CẢ sản phẩm trong Pareto để Tab 2 sử dụng
+                # Pre-calculate auto-adjustments for all products in Pareto
                 for p in top_prods:
                     p_data = cust_df[cust_df['Material name'] == p].groupby(cust_df['ds'].dt.to_period('M'))['Order qty.(A)'].sum().reset_index()
                     p_data['ds'] = p_data['ds'].dt.to_timestamp()
@@ -100,12 +100,11 @@ if uploaded_file:
                         
                         if not v_check.empty:
                             avg_v = ((v_check['y'] - v_check['yhat']) / v_check['yhat']).mean()
-                            # Logic: Nếu vượt +/- 20%, lấy phần dư ra làm offset
                             if avg_v > 0.20: auto_adjustments[p] = avg_v - 0.20
                             elif avg_v < -0.20: auto_adjustments[p] = avg_v + 0.20
                             else: auto_adjustments[p] = 0.0
 
-                # Hiển thị Chart cho sản phẩm đang chọn
+                # Plotting for Selected Product
                 p_plot = cust_df[cust_df['Material name'] == selected_prod].groupby(cust_df['ds'].dt.to_period('M'))['Order qty.(A)'].sum().reset_index()
                 p_plot['ds'] = p_plot['ds'].dt.to_timestamp()
                 p_plot = p_plot.rename(columns={'Order qty.(A)': 'y'})
@@ -116,9 +115,8 @@ if uploaded_file:
                     
                     fig = go.Figure()
                     fig.add_trace(go.Scatter(x=p_plot['ds'], y=p_plot['y'], name="Actual", line=dict(color='blue')))
-                    fcst_26 = fcst[fcst['ds'].dt.year == 2026].copy()
                     
-                    # Áp dụng auto-offset vào graph nếu có
+                    fcst_26 = fcst[fcst['ds'].dt.year == 2026].copy()
                     offset = auto_adjustments.get(selected_prod, 0.0)
                     fcst_26['yhat_adj'] = fcst_26['yhat'] * (1 + offset)
                     
@@ -126,7 +124,7 @@ if uploaded_file:
                     st.plotly_chart(fig, use_container_width=True)
                     
                     if offset != 0:
-                        st.info(f"💡 AI detected a recurring variance. Future months are auto-adjusted by **{offset*100:+.1f}%**.")
+                        st.info(f"💡 AI Auto-Adjustment active: **{offset*100:+.1f}%** (due to Variance > 20%)")
 
                     st.subheader("🔢 Actual vs AI Variance")
                     v_df = pd.merge(p_plot[p_plot['ds'].dt.year == 2026], fcst_26[['ds', 'yhat']], on='ds', how='inner')
@@ -145,7 +143,7 @@ if uploaded_file:
                     }).apply(lambda x: ['background: #f0f2f6; font-weight: bold']*len(x) if x['Month Code'] == "AVERAGE" else ['']*len(x), axis=1), use_container_width=True)
 
             with tab2:
-                st.subheader(f"📋 2026 Strategic Plan (Including Auto-Adjustments)")
+                st.subheader(f"📋 2026 Strategic Plan (with Auto-Adjustment)")
                 months_26 = pd.date_range(start='2026-01-01', end='2026-12-01', freq='MS')
                 cols_26 = [m.strftime('%m/%Y') for m in months_26]
                 pivot_list = []
@@ -153,11 +151,10 @@ if uploaded_file:
 
                 for p in top_prods:
                     product_cies = cust_df[cust_df['Material name'] == p][cie_col].unique()
-                    p_offset = auto_adjustments.get(p, 0.0) # Lấy offset từ Tab 1
+                    p_offset = auto_adjustments.get(p, 0.0)
                     
                     for c in product_cies:
                         q_grow = get_quarterly_growth_logic(cust_df, p, cie_col, c)
-                        # Tổng hợp growth: Logic gốc + Manual Slider + Auto-Adjustment từ Variance
                         total_f_growth = q_grow + (adj_growth/100) + p_offset
                         
                         row = {'Product': p, 'CIE': str(c), 'Auto-Adj': f"{p_offset*100:+.1f}%"}
