@@ -6,10 +6,10 @@ import plotly.graph_objects as go
 # 1. System Config
 st.set_page_config(page_title="AI Supply Chain Advisor 2026", layout="wide")
 
-# --- CORE LOGIC FUNCTIONS ---
+# --- CORE LOGIC FUNCTIONS (STRICTLY UNCHANGED) ---
 
 def get_actual_avg_qty(df, year, quarter, prod, cie_col, cie_val):
-    """Calculates monthly average for months with data (>0) in a Quarter."""
+    """Bảo toàn logic cũ: Tính trung bình các tháng > 0 trong quý."""
     temp = df[(df['Material name'] == prod) & 
               (df[cie_col] == cie_val) & 
               (df['ds'].dt.year == year) & 
@@ -23,7 +23,7 @@ def get_actual_avg_qty(df, year, quarter, prod, cie_col, cie_val):
     return actual_months.mean()
 
 def get_quarterly_growth_logic(cust_df, prod, cie_col, cie_val):
-    """Growth based on Latest 2026 Q vs 2025 same Q."""
+    """Bảo toàn logic cũ: Tăng trưởng dựa trên Q gần nhất 2026 vs 2025."""
     df_26 = cust_df[cust_df['ds'].dt.year == 2026].copy()
     if df_26.empty: return 0.0
     
@@ -75,13 +75,20 @@ if uploaded_file:
         if selected_cust != "-- Select --":
             cust_df = df[df[cust_col] == selected_cust].copy()
             
-            # Pareto 85%
+            # Pareto 85% Calculation
             rev = cust_df.groupby('Material name')['M USD'].sum().sort_values(ascending=False).reset_index()
-            top_prods = rev[rev['M USD'].cumsum() / rev['M USD'].sum() <= 0.86]['Material name'].unique()[:20]
+            rev['Cum%'] = rev['M USD'].cumsum() / rev['M USD'].sum()
+            pareto_df = rev[rev['Cum%'] <= 0.86].copy()
+            top_prods = pareto_df['Material name'].unique()
 
             tab1, tab2 = st.tabs(["📊 Performance Audit", "📋 2026 Strategic Plan"])
 
             with tab1:
+                # 1. Pareto Label (Expander)
+                with st.expander("🎯 85% Revenue Contribution (Pareto List)"):
+                    st.write(f"The following {len(top_prods)} products account for 85% of revenue:")
+                    st.dataframe(pareto_df[['Material name', 'M USD', 'Cum%']].style.format({'M USD': '${:,.2f}', 'Cum%': '{:.1%}'}), use_container_width=True)
+
                 selected_prod = st.selectbox("Product Audit:", top_prods)
                 sample_cies = cust_df[cust_df['Material name'] == selected_prod][cie_col].unique()
                 s_cie = sample_cies[0]
@@ -108,15 +115,15 @@ if uploaded_file:
                     fig.add_trace(go.Scatter(x=fcst_26['ds'], y=fcst_26['yhat'], name="AI Forecast", line=dict(dash='dash', color='orange')))
                     st.plotly_chart(fig, use_container_width=True)
                     
+                    # 2. Updated Table Headers & Average Label
                     st.subheader("🔢 Actual vs AI Variance")
                     act_26 = p_plot[p_plot['ds'].dt.year == 2026]
                     v_df = pd.merge(act_26, fcst_26[['ds', 'yhat']], on='ds', how='inner')
                     
                     if not v_df.empty:
                         v_df['Variance %'] = ((v_df['y'] - v_df['yhat']) / v_df['yhat']) * 100
-                        avg_v = v_df['Variance %'].mean()
                         
-                        # Added string labels: Month Code, Actual Order Quantity, AI FCST Quantity
+                        # Rename columns as requested
                         v_df = v_df.rename(columns={
                             'ds': 'Month Code',
                             'y': 'Actual Order Quantity',
@@ -127,7 +134,7 @@ if uploaded_file:
                             'Month Code': ["AVERAGE"], 
                             'Actual Order Quantity': [v_df['Actual Order Quantity'].mean()], 
                             'AI FCST Quantity': [v_df['AI FCST Quantity'].mean()], 
-                            'Variance %': [avg_v]
+                            'Variance %': [v_df['Variance %'].mean()]
                         })
                         v_display = pd.concat([v_df, avg_row], ignore_index=True)
                         
@@ -139,6 +146,7 @@ if uploaded_file:
                         }).apply(lambda x: ['background: #f0f2f6; font-weight: bold'] * len(x) if x['Month Code'] == "AVERAGE" else [''] * len(x), axis=1), use_container_width=True)
 
             with tab2:
+                # Tab 2 remains with original logic
                 st.subheader(f"📋 2026 Strategic Plan for {selected_cust}")
                 months_26 = pd.date_range(start='2026-01-01', end='2026-12-01', freq='MS')
                 cols_26 = [m.strftime('%m/%Y') for m in months_26]
