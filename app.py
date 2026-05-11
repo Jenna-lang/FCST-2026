@@ -84,4 +84,44 @@ if uploaded_file:
 
                 # Bảng Variance có dòng AVERAGE
                 if not v_df_audit.empty:
-                    v_table = v_df_audit
+                    v_table = v_df_audit.copy()
+                    v_table['Variance %'] = ((v_table['y'] - v_table['yhat']) / v_table['yhat']) * 100
+                    avg_row = pd.DataFrame({'ds': ["AVERAGE"], 'y': [v_table['y'].mean()], 'yhat': [v_table['yhat'].mean()], 'Variance %': [v_table['Variance %'].mean()]})
+                    full_v = pd.concat([v_table, avg_row], ignore_index=True)
+                    st.dataframe(full_v.rename(columns={'ds':'Month', 'y':'Actual', 'yhat':'AI FCST'}).style.format({'Variance %': '{:+.1f}%', 'Actual': '{:,.0f}', 'AI FCST': '{:,.0f}'}))
+
+            with tab2:
+                st.subheader("📋 2026 Strategic Plan")
+                months_26 = pd.date_range(start='2026-01-01', end='2026-12-01', freq='MS')
+                last_act_date = df[df['Order qty.(A)'] > 0]['ds'].max()
+                pivot_list = []
+
+                for p in top_prods:
+                    p_var = auto_adjustments.get(p, 0.0)
+                    for c in sorted(cust_df[cust_df['Material name']==p][cie_col].unique()):
+                        row = {'Product': p, 'CIE': str(c)}
+                        for m_date in months_26:
+                            gap = (m_date.year - last_act_date.year)*12 + (m_date.month - last_act_date.month)
+                            thresh = 0.2 if gap==2 else (0.3 if gap==3 else 0.5)
+                            offset = p_var if abs(p_var) > thresh else 0
+                            
+                            act = cust_df[(cust_df['Material name']==p) & (cust_df[cie_col]==c) & (cust_df['ds']==m_date)]['Order qty.(A)'].sum()
+                            if act > 0: row[m_date.strftime('%m/%Y')] = act
+                            elif m_date > last_act_date:
+                                avg25 = get_actual_avg_qty(cust_df, 2025, (m_date.month-1)//3+1, p, cie_col, c)
+                                row[m_date.strftime('%m/%Y')] = round(avg25 * (1 + offset + (adj_growth/100)), 0)
+                        pivot_list.append(row)
+                st.dataframe(pd.DataFrame(pivot_list), use_container_width=True)
+
+            with tab3:
+                st.subheader("🧪 Compliance Audit (M+x)")
+                test_results = []
+                for p in top_prods:
+                    v = auto_adjustments.get(p, 0.0) * 100
+                    test_results.append({
+                        "Product": p, "Avg Variance": v,
+                        "M+2 (20%)": "✅ Pass" if abs(v)<=20 else "❌ Fail",
+                        "M+3 (30%)": "✅ Pass" if abs(v)<=30 else "❌ Fail",
+                        "M+4 (50%)": "✅ Pass" if abs(v)<=50 else "❌ Fail"
+                    })
+                st.dataframe(pd.DataFrame(test_results), use_container_width=True)
