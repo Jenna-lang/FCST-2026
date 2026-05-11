@@ -1,71 +1,118 @@
-# --- UPDATE TAB DEFINITION ---
-tab1, tab2, tab3 = st.tabs(["📊 Performance Audit", "📋 2026 Strategic Plan", "🧪 Model Testing"])
+import streamlit as st
+import pandas as pd
+from prophet import Prophet
+import plotly.graph_objects as go
+import plotly.express as px
 
-# [Giữ nguyên logic xử lý dữ liệu và Tab 1, Tab 2 như cũ...]
+# 1. System Config
+st.set_page_config(page_title="AI Supply Chain Advisor 2026", layout="wide")
 
-# --- NEW: TAB 3 - MODEL TESTING & COMPLIANCE ---
-with tab3:
-    st.header("🧪 Model Accuracy & Compliance Audit")
-    st.write("Kiểm tra mức độ tuân thủ tiêu chuẩn sai số: M+2 (±20%), M+3 (±30%), M+4 (±50%)")
+# --- CORE LOGIC FUNCTIONS ---
+def get_actual_avg_qty(df, year, quarter, prod, cie_col, cie_val):
+    temp = df[(df['Material name'] == prod) & 
+              (df[cie_col] == cie_val) & 
+              (df['ds'].dt.year == year) & 
+              (df['ds'].dt.quarter == quarter)].copy()
+    monthly_sum = temp.groupby(temp['ds'].dt.month)['Order qty.(A)'].sum()
+    actual_months = monthly_sum[monthly_sum > 0]
+    return actual_months.mean() if not actual_months.empty else 0.0
 
-    # 1. Chuẩn bị dữ liệu đối soát
-    test_results = []
-    
-    # Lấy mốc thời gian hiện tại từ dữ liệu thực tế cuối cùng
-    last_act_date = df[df['Order qty.(A)'] > 0]['ds'].max()
-    curr_m = last_act_date.month
-    curr_y = last_act_date.year
+def get_quarterly_growth_logic(cust_df, prod, cie_col, cie_val):
+    df_26 = cust_df[cust_df['ds'].dt.year == 2026].copy()
+    if df_26.empty: return 0.0
+    valid_26 = df_26[df_26['Order qty.(A)'] > 0]
+    if valid_26.empty: return 0.0
+    latest_q_26 = valid_26['ds'].dt.quarter.max()
+    avg_26 = get_actual_avg_qty(cust_df, 2026, latest_q_26, prod, cie_col, cie_val)
+    avg_25 = get_actual_avg_qty(cust_df, 2025, latest_q_26, prod, cie_col, cie_val)
+    return min(max((avg_26 / avg_25) - 1, -0.5), 0.5) if avg_25 > 0 else 0.0
 
-    for p in top_prods:
-        # Lấy sai số trung bình (Variance) từ Tab 1
-        avg_v_pct = auto_adjustments.get(p, 0.0) * 100 
-        abs_v = abs(avg_v_pct)
-        
-        # Kiểm tra tiêu chuẩn theo từng tầng nấc
-        status_m2 = "✅ Pass" if abs_v <= 20 else "❌ Fail"
-        status_m3 = "✅ Pass" if abs_v <= 30 else "❌ Fail"
-        status_m4 = "✅ Pass" if abs_v <= 50 else "❌ Fail"
-        
-        test_results.append({
-            "Material Name": p,
-            "Current Variance": avg_v_pct,
-            "M+2 Status (±20%)": status_m2,
-            "M+3 Status (±30%)": status_m3,
-            "M+4 Status (±50%)": status_m4,
-            "Reliability Score": 100 - abs_v if abs_v < 100 else 0
-        })
+def process_data(uploaded_file):
+    try:
+        df = pd.read_excel(uploaded_file)
+        df.columns = [str(col).strip() for col in df.columns]
+        if 'Requested deliv. date' in df.columns:
+            df['ds'] = pd.to_datetime(df['Requested deliv. date'], errors='coerce')
+            df['Order qty.(A)'] = pd.to_numeric(df['Order qty.(A)'], errors='coerce').fillna(0)
+            return df.dropna(subset=['ds'])
+        return None
+    except: return None
 
-    test_df = pd.DataFrame(test_results)
+# --- MAIN UI ---
+st.sidebar.header("📁 Data Management")
+uploaded_file = st.sidebar.file_uploader("Upload AICheck.xlsx", type=['xlsx'])
 
-    # 2. Hiển thị Tổng kết (Summary Metrics)
-    avg_acc = test_df['Reliability Score'].mean()
-    pass_rate_m2 = (test_df['M+2 Status (±20%)'] == "✅ Pass").mean() * 100
+if uploaded_file:
+    df = process_data(uploaded_file)
+    if df is not None:
+        all_cols = df.columns.tolist()
+        cust_col = st.sidebar.selectbox("Customer Column:", all_cols, index=0)
+        cie_col = st.sidebar.selectbox("CIE / Color Code Column:", all_cols, index=1)
+        adj_growth = st.sidebar.slider("Manual Growth Adjustment (%)", -50, 50, 0)
+        selected_cust = st.sidebar.selectbox("Select Target Customer:", ["-- Select --"] + sorted(df[cust_col].unique().tolist()))
 
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Overall Accuracy Score", f"{avg_acc:.1f}%")
-    c2.metric("M+2 Compliance Rate", f"{pass_rate_m2:.1f}%")
-    c3.metric("Total SKUs Audited", len(top_prods))
+        if selected_cust != "-- Select --":
+            cust_df = df[df[cust_col] == selected_cust].copy()
+            rev = cust_df.groupby('Material name')['M USD'].sum().sort_values(ascending=False).reset_index()
+            rev['Cum%'] = rev['M USD'].cumsum() / rev['M USD'].sum()
+            top_prods = rev[rev['Cum%'] <= 0.86]['Material name'].unique()
 
-    # 3. Bảng chi tiết tuân thủ
-    st.subheader("📋 Detailed Compliance Matrix")
-    
-    def color_status(val):
-        if "✅" in str(val): color = '#d4edda' # Xanh nhạt
-        elif "❌" in str(val): color = '#f8d7da' # Đỏ nhạt
-        else: color = ''
-        return f'background-color: {color}'
+            # --- ĐỊNH NGHĨA TAB TẠI ĐÂY (SAU KHI ĐÃ CÓ DỮ LIỆU) ---
+            tab1, tab2, tab3 = st.tabs(["📊 Audit", "📋 Strategic Plan", "🧪 Testing"])
 
-    st.dataframe(
-        test_df.style.applymap(color_status, subset=['M+2 Status (±20%)', 'M+3 Status (±30%)', 'M+4 Status (±50%)'])
-        .format({"Current Variance": "{:+.1f}%", "Reliability Score": "{:.1f}%"}),
-        use_container_width=True
-    )
+            auto_adjustments = {}
 
-    # 4. Giải thích logic cho sếp
-    st.info("""
-    **Ghi chú nghiệp vụ:**
-    - **M+2 (20%)**: Ngưỡng nghiêm ngặt cho sản xuất và chốt linh kiện.
-    - **M+3 (30%)**: Ngưỡng linh hoạt hơn cho chuẩn bị nguyên vật liệu dài hạn.
-    - **M+4 (50%)**: Ngưỡng chiến lược cho hoạch định năng lực thiết bị.
-    - *Hệ thống AI đã tự động điều chỉnh (Offset) cho các mã hàng có trạng thái ❌ Fail.*
-    """)
+            with tab1:
+                selected_prod = st.selectbox("Product Audit:", top_prods)
+                # Logic Prophet & Variance Calculation
+                p_plot = cust_df[cust_df['Material name'] == selected_prod].groupby(cust_df['ds'].dt.to_period('M'))['Order qty.(A)'].sum().reset_index()
+                p_plot['ds'] = p_plot['ds'].dt.to_timestamp()
+                p_plot = p_plot.rename(columns={'Order qty.(A)': 'y'})
+                
+                if len(p_plot) > 2:
+                    m = Prophet(yearly_seasonality=True).fit(p_plot)
+                    fcst = m.predict(m.make_future_dataframe(periods=12, freq='MS'))
+                    v_df = pd.merge(p_plot[p_plot['ds'].dt.year == 2026], fcst[['ds', 'yhat']], on='ds')
+                    avg_v = ((v_df['y'] - v_df['yhat']) / v_df['yhat']).mean() if not v_df.empty else 0
+                    auto_adjustments[selected_prod] = avg_v
+                    
+                    fig = go.Figure()
+                    fig.add_trace(go.Scatter(x=p_plot['ds'], y=p_plot['y'], name="Actual"))
+                    fig.add_trace(go.Scatter(x=fcst[fcst['ds'].dt.year==2026]['ds'], y=fcst['yhat']*(1+avg_v), name="Adjusted FCST", line=dict(dash='dash')))
+                    st.plotly_chart(fig, use_container_width=True)
+
+            with tab2:
+                st.subheader("2026 Strategic Plan (Tiered Adjustment)")
+                months_26 = pd.date_range(start='2026-01-01', end='2026-12-01', freq='MS')
+                last_act_date = df[df['Order qty.(A)'] > 0]['ds'].max()
+                pivot_list = []
+
+                for p in top_prods:
+                    p_var = auto_adjustments.get(p, 0.0)
+                    for c in cust_df[cust_df['Material name']==p][cie_col].unique():
+                        row = {'Product': p, 'CIE': str(c)}
+                        for m_date in months_26:
+                            gap = (m_date.year - last_act_date.year)*12 + (m_date.month - last_act_date.month)
+                            thresh = 0.2 if gap==2 else (0.3 if gap==3 else 0.5)
+                            offset = p_var if abs(p_var) > thresh else 0
+                            
+                            act = cust_df[(cust_df['Material name']==p) & (cust_df[cie_col]==c) & (cust_df['ds']==m_date)]['Order qty.(A)'].sum()
+                            if act > 0: row[m_date.strftime('%m/%Y')] = act
+                            elif m_date > last_act_date:
+                                avg25 = get_actual_avg_qty(cust_df, 2025, (m_date.month-1)//3+1, p, cie_col, c)
+                                row[m_date.strftime('%m/%Y')] = round(avg25 * (1 + offset + (adj_growth/100)), 0)
+                        pivot_list.append(row)
+                st.dataframe(pd.DataFrame(pivot_list), use_container_width=True)
+
+            with tab3:
+                st.header("🧪 Compliance Audit (M+2/3/4)")
+                test_results = []
+                for p in top_prods:
+                    v = auto_adjustments.get(p, 0.0) * 100
+                    test_results.append({
+                        "Product": p, "Variance": v,
+                        "M+2 (20%)": "✅ Pass" if abs(v)<=20 else "❌ Fail",
+                        "M+3 (30%)": "✅ Pass" if abs(v)<=30 else "❌ Fail",
+                        "M+4 (50%)": "✅ Pass" if abs(v)<=50 else "❌ Fail"
+                    })
+                st.table(pd.DataFrame(test_results))
