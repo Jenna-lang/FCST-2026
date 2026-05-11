@@ -3,13 +3,13 @@ import pandas as pd
 from prophet import Prophet
 import plotly.graph_objects as go
 
-# 1. Cấu hình hệ thống
+# 1. System Config
 st.set_page_config(page_title="AI Supply Chain Advisor 2026", layout="wide")
 
-# --- HÀM LOGIC CỐT LÕI ---
+# --- CORE LOGIC FUNCTIONS ---
 def get_actual_avg_qty(df, year, quarter, prod, cie_col, cie_val):
     temp = df[(df['Material name'] == prod) & 
-              (df[cie_col] == cie_val) & 
+              (df[cie_col].astype(str) == str(cie_val)) & 
               (df['ds'].dt.year == year) & 
               (df['ds'].dt.quarter == quarter)].copy()
     monthly_sum = temp.groupby(temp['ds'].dt.month)['Order qty.(A)'].sum()
@@ -27,7 +27,7 @@ def process_data(uploaded_file):
         return None
     except: return None
 
-# --- GIAO DIỆN CHÍNH ---
+# --- MAIN UI ---
 st.sidebar.header("📁 Data Management")
 uploaded_file = st.sidebar.file_uploader("Upload AICheck.xlsx", type=['xlsx'])
 
@@ -37,6 +37,10 @@ if uploaded_file:
         all_cols = df.columns.tolist()
         cust_col = st.sidebar.selectbox("Customer Column:", all_cols, index=0)
         cie_col = st.sidebar.selectbox("CIE / Color Code Column:", all_cols, index=1)
+        
+        # Tiền xử lý cột CIE để tránh lỗi TypeError (quan trọng)
+        df[cie_col] = df[cie_col].fillna("N/A").astype(str)
+        
         adj_growth = st.sidebar.slider("Manual Growth Adjustment (%)", -50, 50, 0)
         selected_cust = st.sidebar.selectbox("Select Target Customer:", ["-- Select --"] + sorted(df[cust_col].unique().tolist()))
 
@@ -46,9 +50,9 @@ if uploaded_file:
             rev['Cum%'] = rev['M USD'].cumsum() / rev['M USD'].sum()
             top_prods = rev[rev['Cum%'] <= 0.86]['Material name'].unique()
 
-            # --- BƯỚC QUAN TRỌNG: TÍNH TOÁN SAI SỐ TRƯỚC CHO TẤT CẢ TABS ---
+            # --- PRE-CALCULATE ALL VARIANCES ---
             auto_adjustments = {}
-            with st.spinner('🔄 AI is auditing performance...'):
+            with st.spinner('🔄 AI is auditing model performance...'):
                 for p in top_prods:
                     p_data = cust_df[cust_df['Material name'] == p].groupby(cust_df['ds'].dt.to_period('M'))['Order qty.(A)'].sum().reset_index()
                     p_data['ds'] = p_data['ds'].dt.to_timestamp()
@@ -59,14 +63,12 @@ if uploaded_file:
                         v_26 = pd.merge(p_data[p_data['ds'].dt.year == 2026], f[['ds', 'yhat']], on='ds')
                         auto_adjustments[p] = ((v_26['y'] - v_26['yhat']) / v_26['yhat']).mean() if not v_26.empty else 0.0
 
-            # --- TẠO CÁC TAB HÀNH ĐỘNG ---
             tab1, tab2, tab3 = st.tabs(["📊 Performance Audit", "📋 2026 Strategic Plan", "🧪 Model Testing"])
 
             with tab1:
-                st.subheader("🎯 Variance Audit")
-                selected_prod = st.selectbox("Audit Product:", top_prods)
+                st.subheader("🎯 Variance Audit & Visuals")
+                selected_prod = st.selectbox("Select Product to Audit:", top_prods)
                 
-                # Vẽ biểu đồ
                 p_plot = cust_df[cust_df['Material name'] == selected_prod].groupby(cust_df['ds'].dt.to_period('M'))['Order qty.(A)'].sum().reset_index()
                 p_plot['ds'] = p_plot['ds'].dt.to_timestamp()
                 p_plot = p_plot.rename(columns={'Order qty.(A)': 'y'})
@@ -78,17 +80,27 @@ if uploaded_file:
                 
                 cur_v = auto_adjustments.get(selected_prod, 0.0)
                 fig = go.Figure()
-                fig.add_trace(go.Scatter(x=p_plot['ds'], y=p_plot['y'], name="Actual"))
+                fig.add_trace(go.Scatter(x=p_plot['ds'], y=p_plot['y'], name="Actual (Thực tế)"))
                 fig.add_trace(go.Scatter(x=fcst_26_audit['ds'], y=fcst_26_audit['yhat']*(1+cur_v), name="Adjusted FCST", line=dict(dash='dash', color='orange')))
                 st.plotly_chart(fig, use_container_width=True)
 
-                # Bảng chi tiết có dòng AVERAGE
                 if not v_df_audit.empty:
                     v_table = v_df_audit.copy()
                     v_table['Variance %'] = ((v_table['y'] - v_table['yhat']) / v_table['yhat']) * 100
-                    avg_row = pd.DataFrame({'ds': ["AVERAGE"], 'y': [v_table['y'].mean()], 'yhat': [v_table['yhat'].mean()], 'Variance %': [v_table['Variance %'].mean()]})
+                    
+                    # Dòng AVERAGE
+                    avg_row = pd.DataFrame({
+                        'ds': ["AVERAGE"], 
+                        'y': [v_table['y'].mean()], 
+                        'yhat': [v_table['yhat'].mean()], 
+                        'Variance %': [v_table['Variance %'].mean()]
+                    })
                     full_v = pd.concat([v_table, avg_row], ignore_index=True)
-                    st.dataframe(full_v.rename(columns={'ds':'Month', 'y':'Actual', 'yhat':'AI FCST'}).style.format({'Variance %': '{:+.1f}%', 'Actual': '{:,.0f}', 'AI FCST': '{:,.0f}'}))
+                    
+                    st.write("🔢 **Variance Details:**")
+                    st.dataframe(full_v.rename(columns={'ds':'Month', 'y':'Actual', 'yhat':'AI FCST'}).style.format({
+                        'Variance %': '{:+.1f}%', 'Actual': '{:,.0f}', 'AI FCST': '{:,.0f}'
+                    }).apply(lambda x: ['background-color: #f0f2f6; font-weight: bold']*len(x) if x['Month'] == "AVERAGE" else ['']*len(x), axis=1))
 
             with tab2:
                 st.subheader("📋 2026 Strategic Plan")
@@ -98,10 +110,10 @@ if uploaded_file:
 
                 for p in top_prods:
                     p_var = auto_adjustments.get(p, 0.0)
-                    # Sửa lỗi Syntax tại đây (đóng ngoặc chuẩn)
-                    unique_cies = sorted(cust_df[cust_df['Material name'] == p][cie_col].unique())
-                    for c in unique_cies:
-                        row = {'Product': p, 'CIE': str(c)}
+                    # Lấy danh sách CIE an toàn
+                    cies = sorted(cust_df[cust_df['Material name'] == p][cie_col].unique().tolist())
+                    for c in cies:
+                        row = {'Product': p, 'CIE': c}
                         for m_date in months_26:
                             gap = (m_date.year - last_act_date.year)*12 + (m_date.month - last_act_date.month)
                             thresh = 0.2 if gap==2 else (0.3 if gap==3 else 0.5)
@@ -113,7 +125,7 @@ if uploaded_file:
                                 avg25 = get_actual_avg_qty(cust_df, 2025, (m_date.month-1)//3+1, p, cie_col, c)
                                 row[m_date.strftime('%m/%Y')] = round(avg25 * (1 + offset + (adj_growth/100)), 0)
                         pivot_list.append(row)
-                st.dataframe(pd.DataFrame(pivot_list), use_container_width=True)
+                st.dataframe(pd.DataFrame(pivot_list).fillna(0), use_container_width=True)
 
             with tab3:
                 st.subheader("🧪 Compliance Audit (M+x)")
@@ -126,4 +138,4 @@ if uploaded_file:
                         "M+3 (30%)": "✅ Pass" if abs(v)<=30 else "❌ Fail",
                         "M+4 (50%)": "✅ Pass" if abs(v)<=50 else "❌ Fail"
                     })
-                st.dataframe(pd.DataFrame(test_results), use_container_width=True)
+                st.table(pd.DataFrame(test_results))
